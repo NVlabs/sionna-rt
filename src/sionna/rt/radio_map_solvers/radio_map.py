@@ -16,6 +16,8 @@ from sionna.rt.utils import watt_to_dbm, log10, rotation_matrix
 from sionna.rt.scene import Scene
 from sionna.rt.constants import DEFAULT_TRANSMITTER_COLOR,\
     DEFAULT_RECEIVER_COLOR
+    
+from ..distinctipy.distinctipy import *
 
 
 class RadioMap:
@@ -515,7 +517,15 @@ class RadioMap:
             raise ValueError("Invalid metric")
 
         # Create the colormap and normalization
-        colors = mpl.colormaps['Dark2'].colors[:self.num_tx]
+        if(self.num_tx<=8):
+            colors = mpl.colormaps['Dark2'].colors[:self.num_tx]
+        else:
+            colors = get_colors(
+                n_colors=self.num_tx,
+                pastel_factor=0,
+                rng=123,
+            )
+        
         cmap, norm = from_levels_and_colors(
             list(range(self.num_tx+1)), colors)
         fig_tx = plt.figure()
