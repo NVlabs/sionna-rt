@@ -489,7 +489,8 @@ class RadioMap:
         self,
         metric : str = "path_gain",
         show_tx : bool = True,
-        show_rx : bool = False
+        show_rx : bool = False,
+        colors_map = None
         ) -> plt.Figure:
         r"""Visualizes cell-to-tx association for a given metric
 
@@ -515,7 +516,13 @@ class RadioMap:
             raise ValueError("Invalid metric")
 
         # Create the colormap and normalization
-        colors = mpl.colormaps['Dark2'].colors[:self.num_tx]
+        if(colors_map is None):
+            colors_map = mpl.colormaps['Dark2'].colors
+        if(self.num_tx <= len(colors_map)):
+            colors = colors_map[:self.num_tx]
+        else:
+            raise ValueError('Color map is not enough for '+str(self.num_tx)+' only has '+str(len(colors_map))+' colors. Please use parameter colors_map to provide more colors.')
+        
         cmap, norm = from_levels_and_colors(
             list(range(self.num_tx+1)), colors)
         fig_tx = plt.figure()
