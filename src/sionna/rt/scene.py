@@ -522,7 +522,8 @@ class Scene:
         rm_tx: int | str | None = None,
         rm_vmax: float | None = None,
         rm_vmin: float | None = None,
-        show_devices: bool = True
+        show_devices: bool = True,
+        show_orientations: bool = False,
     ) -> plt.Figure | mi.Bitmap:
         # pylint: disable=line-too-long
         r"""Renders the scene from the viewpoint of a camera or the interactive viewer
@@ -583,12 +584,16 @@ class Scene:
             set to `True`, or in linear scale otherwise.
 
         :param show_devices: Show radio devices
+
+        :param show_orientations: If set to `True`, the orientation of
+            the radio device is shown using a line. Defaults to `False`.
         """
         image = render(
             scene=self,
             camera=camera,
             paths=paths,
             show_devices=show_devices,
+            show_orientations=show_orientations,
             clip_at=clip_at,
             clip_plane_orientation=clip_plane_orientation,
             radio_map=radio_map,
@@ -668,7 +673,8 @@ class Scene:
         rm_tx: int | str | None=None,
         rm_vmin: float | None=None,
         rm_vmax: float | None=None,
-        show_devices: bool=True
+        show_devices: bool=True,
+        show_orientations: bool=False
     ) -> mi.Bitmap:
         # pylint: disable=line-too-long
         r"""Renders the scene from the viewpoint of a camera or the interactive
@@ -729,12 +735,16 @@ class Scene:
             set to `True`, or in linear scale otherwise.
 
         :param show_devices: Show radio devices
+
+        :param show_orientations: If set to `True`, the orientation of
+            the radio device is shown using a line. Defaults to `False`.
         """
         image = render(
             scene=self,
             camera=camera,
             paths=paths,
             show_devices=show_devices,
+            show_orientations=show_orientations,
             clip_at=clip_at,
             clip_plane_orientation=clip_plane_orientation,
             radio_map=radio_map,

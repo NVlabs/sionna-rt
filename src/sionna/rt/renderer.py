@@ -13,13 +13,14 @@ import numpy as np
 from  sionna import rt
 from .utils import make_render_sensor, paths_to_segments, unmultiply_alpha, \
                    twosided_diffuse, radio_map_to_textured_rectangle, \
-                   scoped_set_log_level, scene_scale
+                   rotation_matrix, scoped_set_log_level, scene_scale
 
 
 def render(scene: rt.Scene,
            camera: str | rt.Camera | mi.ScalarTransform4f | mi.Sensor,
            paths: rt.Paths | None,
            show_devices: bool,
+           show_orientations: bool,
            num_samples: int, resolution: tuple[int, int], fov: float = 45,
            clip_at: float | None = None,
            clip_plane_orientation: tuple[float, float, float] = (0, 0, -1),
@@ -51,6 +52,10 @@ def render(scene: rt.Scene,
 
     show_devices : bool
         If `paths` is not `None`, shows the radio devices.
+
+    show_orientations : bool
+        If set to `True`, the orientation of the radio device is shown using
+        a line.
 
     radio_map : :class:`~sionna.rt.RadioMap` | `None`
         An optional coverage map to overlay in the scene for visualization.
@@ -142,6 +147,7 @@ def render(scene: rt.Scene,
         overlay_scene = get_overlay_scene(
             scene, sensor, paths=paths,
             show_sources=show_devices, show_targets=show_devices,
+            show_orientations=show_orientations,
             radio_map=radio_map,
            rm_tx=rm_tx, rm_db_scale=rm_db_scale,
            rm_vmin=rm_vmin, rm_vmax=rm_vmax, rm_metric=rm_metric
@@ -298,6 +304,7 @@ def visual_scene_from_wireless_scene(scene: rt.Scene,
 # pylint: disable=line-too-long
 def get_overlay_scene(scene: rt.Scene, sensor: mi.Sensor, paths: any | None = None,
                       show_sources: bool = True, show_targets: bool = True,
+                      show_orientations: bool = False,
                       radio_map: rt.CoverageMap | None = None,
                       rm_tx: int | str | None = None, rm_db_scale: bool = True,
                       rm_vmin: float | None = None, rm_vmax: float | None = None,
@@ -312,6 +319,7 @@ def get_overlay_scene(scene: rt.Scene, sensor: mi.Sensor, paths: any | None = No
     if sc == 0.:
         sc = 1.
     radius = max(0.005 * sc, 0.5)
+    orientatiton_radius = min(0.005 * sc, 0.2)
 
     # TODO: should use the source and target positions from the `paths` object
     # if given?
@@ -338,6 +346,25 @@ def get_overlay_scene(scene: rt.Scene, sensor: mi.Sensor, paths: any | None = No
                     'radiance': {'type': 'rgb', 'value': rd.color},
                 },
             }
+
+            if show_orientations:
+                line_length = 0.25 * sc
+                head_length = 0.05 * line_length
+
+                rot_mat = rotation_matrix(rd.orientation)
+                local_endpoint = mi.Point3f(line_length, 0.0, 0.0)
+                endpoint = rd.position + rot_mat @ local_endpoint
+
+                result[f"rd-{prefix}-{name}-line"] = {
+                    "type": "cylinder",
+                    "p0": dr.ravel(rd.position),
+                    "p1": dr.ravel(endpoint),
+                    "radius": orientatiton_radius,
+                    "light": {
+                        "type": "area",
+                        "radiance": {"type": "rgb", "value": rd.color},
+                    },
+                }
 
     # --- Paths, shown as cylinders (the closest we have to lines)
     if paths is not None:
