@@ -156,3 +156,50 @@ def test03_render_to_file_with_vertical_cut_plane():
                   & (mean_color[[0, 1]] <= 0.38 * 255))
     assert mean_color[2] >= 0.5 * 255
     assert mean_color[3] >= 0.95 * 255
+
+
+def test04_render_with_device_orientations():
+    scene = load_scene(rt.scene.box_two_screens)
+    # Set the material properties.
+    eta_r, sigma = itu_material("metal", 3e9) # ITU material evaluated at 3GHz
+    for sh in scene.mi_scene.shapes():
+        material = sh.bsdf().radio_material
+        material.relative_permittivity = eta_r
+        material.conductivity = sigma
+        material.scattering_coefficient = 0.01
+        material.xpd_coefficient = 0.2
+
+    add_example_radio_devices(scene)
+    paths = get_example_paths(scene)
+    radio_map = get_example_radio_map(scene)
+
+    # Camera pose to render from
+    bbox = scene.mi_scene.bbox()
+    to_world = mi.ScalarTransform4f().look_at(
+        origin=mi.ScalarVector3f(1.3, 1.0, 1.5) * bbox.max,
+        target=mi.ScalarVector3f(1, 1, 0) * bbox.center(),
+        up=[0, 0, 1],
+    )
+
+    image: mi.Bitmap = scene.render(
+        camera=to_world,
+        resolution=(256, 256), num_samples=4, fov=70,
+        show_devices=True,
+        show_orientations=True,
+        clip_at=0.9 * scene.mi_scene.bbox().max.z,
+        lighting_scale=1.5, return_bitmap=True)
+
+    # fname = join(tempfile.gettempdir(), "scene.png")
+    # image.convert(pixel_format=mi.Bitmap.PixelFormat.RGBA, \
+    #             component_format=mi.Struct.Type.UInt8, srgb_gamma=True) \
+    #     .write(fname)
+    # print(f"[+] Rendering saved to: {fname}")
+
+    # It's too brittle to specify the exact result per pixel, so we assert
+    # on the proportion of colors instead.
+    image_np = np.array(image, copy=False)
+    green_line = np.mean(image_np[-70:-50, :35], axis=(0, 1))
+    assert np.all(green_line > [0.066, 0.132, 0.066, 0.165])
+
+    yellow_line = np.mean(image_np[80:120, 20:50], axis=(0, 1))
+    assert np.all(yellow_line > [0.207, 0.207, 0.158, 0.999])
