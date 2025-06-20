@@ -52,21 +52,60 @@ class DemRadioMap(MeshRadioMap):
             elevation = mi.TensorXf(elevation)
 
         # Number of cells
-        cells_per_dim = mi.Point2u(elevation.shape[1] - 1,
-                                   elevation.shape[0] - 1)
+        cells_per_dim = mi.Point2u(elevation.shape[1], elevation.shape[0])
 
         # Builds the Mitsuba mesh modeling the measurement surface
         meas_surface = triangulate_elevation(elevation)
+        center = mi.Point3f(center)
+        orientation = mi.Point3f(orientation)
+        orientation_deg = orientation * 180. / dr.pi
+        size = mi.Point2f(size)
+        to_world = mi.Transform4f().translate(center) \
+                                .rotate([0., 0., 1.], orientation_deg.x) \
+                                .rotate([0., 1., 0.], orientation_deg.y) \
+                                .rotate([1., 0., 0.], orientation_deg.z) \
+                                .scale([0.5 * size.x, 0.5 * size.y, 1])
         params = mi.traverse(meas_surface)
-        params["to_world"] = self.to_world
+        # Apply the to_world transformation
+        vertices = dr.reshape(mi.Point3f, params["vertex_positions"], (3, -1))
+        vertices = to_world @ vertices
+        params["vertex_positions"] = dr.ravel(vertices)
+
         params.update()
         super().__init__(scene, meas_surface=meas_surface)
 
         self._elevation = elevation
         self._cells_per_dim = cells_per_dim
-        self._center = mi.Point3f(center)
-        self._orientation = mi.Point3f(orientation)
-        self._size = mi.Point2f(size)
+        self._center = center
+        self._orientation = orientation
+        self._size = size
+
+    @property
+    def center(self):
+        r"""Center of the radio map in the global coordinate system
+
+        :type: :py:class:`mi.Point3f`
+        """
+        return self._center
+
+    @property
+    def orientation(self):
+        r"""Orientation of the radio map :math:`(\alpha, \beta, \gamma)`
+        specified through three angles corresponding to a 3D rotation as defined
+        in :eq:`rotation`. An orientation of :math:`(0,0,0)` corresponds to a
+        radio map that is parallel to the XY plane.
+
+        :type: :py:class:`mi.Point3f`
+        """
+        return self._orientation
+
+    @property
+    def size(self):
+        r"""Size of the radio map [m]
+
+        :type: :py:class:`mi.Point2f`
+        """
+        return self._size
 
     @property
     def elevation(self):
@@ -123,40 +162,35 @@ class DemRadioMap(MeshRadioMap):
         super().finalize()
         # [num_tx, 2 * cells_per_dim_y * cells_per_dim_x]
         pathgain_map = self._pathgain_map
-        all_idx = dr.arange(mi.UInt, size=len(pathgain_map.array))
-        # There are two faces for a cell. If one face was originally nan,
-        # the cell's value should be the value of the other face. Assumes that
-        # values are non-infinite.
-        dr.scatter(
-            target=pathgain_map,
-            value=float("-inf"),
-            index=all_idx,
-            active=dr.isnan(pathgain_map),
-        )
-        # [num_tx, 2 * cells_per_dim_y * cells_per_dim_x]
-        pathgain_map = dr.block_reduce(
-            op=dr.ReduceOp.Max,
-            value=pathgain_map,
-            block_size=2,
-        )
-        # [num_tx, cells_per_dim_y * cells_per_dim_x]
-        pathgain_map = dr.block_sum(pathgain_map, 2) / 2
-        dr.scatter(
-            target=pathgain_map,
-            value=float("nan"),
-            index=all_idx,
-            # There is no way to check specifically for -inf
-            active=dr.isinf(pathgain_map) & (pathgain_map < 0),
-        )
-
         cells_per_dim_x = self._cells_per_dim.x[0]
         cells_per_dim_y = self._cells_per_dim.y[0]
-        # [num_tx, cells_per_dim_y, cells_per_dim_x]
-        pathgain_map = dr.reshape(
-            dtype=mi.TensorXf,
-            value=pathgain_map,
-            shape=(self.num_tx, cells_per_dim_y, cells_per_dim_x))
-        self._pathgain_map = pathgain_map
+        grid_shape = (self.num_tx, cells_per_dim_y, cells_per_dim_x)
+        pathgain_map_grid = dr.zeros(mi.TensorXf, shape=grid_shape)
+
+        num_faces = len(pathgain_map.array)
+        upper_indices = dr.arange(mi.UInt, start=0, stop=num_faces // 2)
+        lower_indices = dr.arange(mi.UInt, start=num_faces // 2, stop=num_faces)
+        # [num_tx * cells_per_dim_y * cells_per_dim_x]
+        all_grid_indices = dr.arange(mi.UInt, size=len(pathgain_map_grid.array))
+        # [num_tx * cells_per_dim_y * cells_per_dim_x]
+        upper_face_values = dr.gather(mi.Float, pathgain_map.array, upper_indices)
+        # [num_tx * cells_per_dim_y * cells_per_dim_x]
+        lower_face_values = dr.gather(mi.Float, pathgain_map.array, lower_indices)
+        # TODO make this work for multiple transmitters
+        dr.scatter_add(target=pathgain_map_grid.array,
+                       value=upper_face_values,
+                       index=all_grid_indices,
+                       active=~dr.isnan(upper_face_values))
+        dr.scatter_add(target=pathgain_map_grid.array,
+                       value=lower_face_values,
+                       index=all_grid_indices,
+                       active=~dr.isnan(lower_face_values))
+        # [num_tx * cells_per_dim_y * cells_per_dim_x]
+        count = dr.zeros(mi.TensorXu, grid_shape)
+        dr.scatter_add(count.array, 1, all_grid_indices, ~dr.isnan(upper_face_values))
+        dr.scatter_add(count.array, 1, all_grid_indices, ~dr.isnan(lower_face_values))
+        pathgain_map_grid /= count
+        self._pathgain_map = pathgain_map_grid
 
     def resample(self, resolution: mi.Point2u):
         resolution = mi.Point2u(resolution)
@@ -170,23 +204,3 @@ class DemRadioMap(MeshRadioMap):
         bitmap = mi.Bitmap(self._elevation, mi.Bitmap.PixelFormat.Y)
         resampled = mi.TensorXf(bitmap.resample(resolution))
         self._elevation = dr.reshape(mi.TensorXf, resampled, shape)
-
-    @property
-    def to_world(self):
-        r"""Transform that maps a unit square in the X-Y plane to the rectangle
-        that defines the radio map's base
-
-        :type: :py:class:`mi.Transform4f`
-        """
-
-        center = self.center
-        orientation = self.orientation
-        size = self.size
-
-        orientation_deg = orientation * 180. / dr.pi
-        to_world = mi.Transform4f().translate(center) \
-                                .rotate([0., 0., 1.], orientation_deg.x) \
-                                .rotate([0., 1., 0.], orientation_deg.y) \
-                                .rotate([1., 0., 0.], orientation_deg.z) \
-                                .scale([0.5 * size.x, 0.5 * size.y, 1])
-        return to_world

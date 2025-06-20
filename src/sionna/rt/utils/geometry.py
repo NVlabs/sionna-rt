@@ -7,6 +7,8 @@
 import drjit as dr
 import mitsuba as mi
 from typing import Tuple
+import numpy as np
+from numpy.lib.stride_tricks import sliding_window_view
 
 
 def phi_hat(phi : mi.Float) -> mi.Vector3f:
@@ -110,12 +112,17 @@ def rotation_matrix(angles : mi.Point3f) -> mi.Matrix3f:
     return rot_mat
 
 def triangulate_elevation(elevation: mi.TensorXf) -> mi.Mesh:
+    # Treat elevation data as values at the centers of cells. We want the
+    # corners. The corners are the average of the surrounding centers
+    padded = np.pad(elevation.numpy(), 1, constant_values=float("nan"))
+    windows = sliding_window_view(padded, window_shape=(2, 2), axis=(0, 1))
+    elevation = np.nanmean(windows, axis=(-1, -2))
     num_rows, num_cols = elevation.shape
     vertices_x, vertices_y = dr.meshgrid(
         dr.linspace(mi.Float, 0, 1, num_cols),
         dr.linspace(mi.Float, 0, 1, num_rows)
     )
-    vertices = mi.Point3f(vertices_x, vertices_y, dr.ravel(elevation))
+    vertices = mi.Point3f(vertices_x, vertices_y, elevation.ravel())
     texcoords = vertices.xy
 
     vertex_indices = dr.arange(mi.UInt, num_rows * num_cols)
@@ -125,6 +132,7 @@ def triangulate_elevation(elevation: mi.TensorXf) -> mi.Mesh:
     is_last_row = vertex_indices // num_cols == num_rows - 1
     ii = dr.compress(~is_last_column & ~is_last_row)
     first_half_mask = dr.arange(mi.UInt, faces_count) < faces_count / 2
+    # TODO verify that this isn't backwards?
     dr.scatter(target=faces,
                value=mi.Vector3u(ii, ii + 1, ii + num_cols + 1),
                index=dr.compress(first_half_mask))
