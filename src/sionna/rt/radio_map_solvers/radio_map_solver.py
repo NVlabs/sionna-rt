@@ -9,7 +9,7 @@ import drjit as dr
 from typing import Tuple, Callable, List
 
 from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
-    rotation_matrix, spectrum_to_matrix_4f, triangulate_elevation
+    rotation_matrix, spectrum_to_matrix_4f
 from sionna.rt import Scene
 from sionna.rt.antenna_pattern import antenna_pattern_to_world_implicit
 from sionna.rt.constants import InteractionType
@@ -377,7 +377,12 @@ class RadioMapSolver:
             radio_map = MeshRadioMap(scene, measurement_surface)
         elif digital_elevation_model is not None:
             # measurement_surface = triangulate_elevation(digital_elevation_model)
-            radio_map = DemRadioMap(scene, digital_elevation_model)
+            radio_map = DemRadioMap(scene=scene,
+                                    elevation=digital_elevation_model,
+                                    cell_size=cell_size,
+                                    center=center,
+                                    orientation=orientation,
+                                    size=size)
             measurement_surface = radio_map.measurement_surface
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
         else:

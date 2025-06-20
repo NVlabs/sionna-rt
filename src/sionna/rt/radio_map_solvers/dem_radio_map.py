@@ -13,7 +13,8 @@ if TYPE_CHECKING:
 class DemRadioMap(MeshRadioMap):
     def __init__(self,
                  scene : "Scene",
-                 elevation: mi.TensorXf,
+                 elevation : mi.TensorXf,
+                 cell_size : mi.Point2f | None = None,
                  center : mi.Point3f | None = None,
                  orientation : mi.Point3f | None = None,
                  size : mi.Point2f | None = None):
@@ -65,9 +66,24 @@ class DemRadioMap(MeshRadioMap):
 
         self._elevation = elevation
         self._cells_per_dim = cells_per_dim
+        if cell_size is None:
+            self._cell_size = mi.Point2f(elevation.shape[1], elevation.shape[0])
+        else:
+            self._cell_size = cell_size
         self._center = center
         self._orientation = orientation
         self._size = size
+
+        res = mi.Point2u(dr.ceil(self._size / self._cell_size))
+        if res.x[0] > elevation.shape[1] or res.y[0] > elevation.shape[0]:
+            # Error here if possible to avoid doing work and then erroring after
+            raise ValueError("The requested cell size is too small. Use a "
+                             "larger cell size or provide higher-resolution "
+                             "elevation data.")
+
+        # Copies to prevent data loss when repeatedly calling resample()
+        self._original_pathgain_map = None
+        self._original_elevation = elevation
 
     @property
     def center(self):
@@ -195,16 +211,38 @@ class DemRadioMap(MeshRadioMap):
                            active=~dr.isnan(lower_face_values))
             pathgain_map_grid /= count
         self._pathgain_map = pathgain_map_grid
+        self._original_pathgain_map = pathgain_map_grid
+        # Resample to have cells of the desired size
+        self.resample(self._cell_size)
 
-    def resample(self, resolution: mi.Point2u):
-        resolution = mi.Point2u(resolution)
-        self._cells_per_dim = resolution
-        shape = (resolution.y[0], resolution.x[0])
+    def resample(self, cell_size: mi.Point2f):
+        cell_size = mi.Point2f(cell_size)
+        original_shape = mi.Point2f(dr.reverse(self._original_elevation.shape))
+        original_cell_size = self._size / original_shape
+        # The new resolution must be at most as large as the provided elevation
+        # data. Any more and the resampling leads to significant error. Resolve
+        # this by increasing cell size or using a higher resolution DEM.
+        if cell_size.x < original_cell_size.x:
+            raise ValueError(f"`cell_size.x` must be greater than or equal to "
+                             f"{original_cell_size.x[0]}.")
+        if cell_size.y < original_cell_size.y:
+            raise ValueError(f"`cell_size.y` must be greater than or equal to "
+                             f"{original_cell_size.y[0]}.")
+
+        res = mi.Point2u(dr.ceil(self._size / cell_size))
+        # The resample() function needs this to be the scalar type
+        res = mi.ScalarPoint2u(res.x[0], res.y[0])
+        self._cells_per_dim = mi.Vector2u(res.x, res.y)
+
         # Resize the pathgain map
-        bitmap = mi.Bitmap(self._pathgain_map, mi.Bitmap.PixelFormat.Y)
-        resampled = mi.TensorXf(bitmap.resample(resolution))
-        self._pathgain_map = dr.reshape(mi.TensorXf, resampled, shape)
+        pathgain_map = dr.zeros(mi.TensorXf, (self.num_tx, *res.yx))
+        for tx in range(self.num_tx):
+            original_pathgain_map = self._original_pathgain_map[tx, ...]
+            bitmap = mi.Bitmap(original_pathgain_map, mi.Bitmap.PixelFormat.Y)
+            resampled = mi.TensorXf(bitmap.resample(res))
+            pathgain_map[tx, ...] = resampled.array
+        self._pathgain_map = pathgain_map
         # Resize the stored elevation map
-        bitmap = mi.Bitmap(self._elevation, mi.Bitmap.PixelFormat.Y)
-        resampled = mi.TensorXf(bitmap.resample(resolution))
-        self._elevation = dr.reshape(mi.TensorXf, resampled, shape)
+        bitmap = mi.Bitmap(self._original_elevation, mi.Bitmap.PixelFormat.Y)
+        resampled = mi.TensorXf(bitmap.resample(res))
+        self._elevation = dr.reshape(mi.TensorXf, resampled, res.yx)
