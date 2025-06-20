@@ -368,14 +368,14 @@ class RadioMapSolver:
 
         # Build Radio Map instance
         # Modify the scene for non-planar radio maps.
-        if measurement_surface and digital_elevation_model:
+        if measurement_surface is not None and digital_elevation_model is not None:
             raise ValueError("At most one of `measurement_surface` and `digital_elevation_model` can be provided.")
-        elif measurement_surface:
+        elif measurement_surface is not None:
             if isinstance(measurement_surface, SceneObject):
                 measurement_surface = measurement_surface.mi_mesh
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
             radio_map = MeshRadioMap(scene, measurement_surface)
-        elif digital_elevation_model:
+        elif digital_elevation_model is not None:
             radio_map = DemRadioMap(scene, digital_elevation_model)
             measurement_surface = radio_map.measurement_surface
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
