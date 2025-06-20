@@ -474,6 +474,60 @@ class Previewer:
         mesh = p3s.Mesh(geometry, material)
         self._add_child(mesh, pmin, pmax, persist=False)
 
+    def plot_dem_radio_map(self, radio_map, tx=0, db_scale=True,
+                            vmin=None, vmax=None, metric="path_gain"):
+        """
+        Plot the radio map as a textured mesh in the scene.
+        """
+        meas_surface: mi.Mesh = radio_map.measurement_surface
+        vertices = dr.reshape(dtype=mi.Point3f,
+                              value=meas_surface.vertex_positions_buffer(),
+                              shape=(3, meas_surface.vertex_count()))
+        texcoords = dr.reshape(dtype=mi.Point2f,
+                               value=meas_surface.vertex_texcoords_buffer(),
+                               shape=(2, meas_surface.vertex_count()))
+        faces = dr.reshape(dtype=mi.Vector3u,
+                           value=meas_surface.faces_buffer(),
+                           shape=(3, meas_surface.face_count()))
+        # Transpose since .numpy() gives arrays with shape (ndim, -1)
+        position_np = vertices.numpy().T
+        index_np = faces.numpy().T
+        uv_np = texcoords.numpy().T
+
+        geo = p3s.BufferGeometry(
+            attributes={
+                "position": p3s.BufferAttribute(position_np, normalize=False),
+                "index": p3s.BufferAttribute(index_np.ravel(), normalize=False),
+                "uv": p3s.BufferAttribute(uv_np, normalize=False)
+            }
+        )
+
+        tensor = radio_map.transmitter_radio_map(metric, tx).numpy()
+        to_map, normalizer, color_map = self._coverage_map_color_mapping(
+            tensor, db_scale=db_scale, vmin=vmin, vmax=vmax
+        )
+        texture = color_map(normalizer(to_map)).astype(np.float32)
+        texture[:, :, 3] = (tensor > 0.0).astype(np.float32)
+
+        texture = p3s.DataTexture(
+            data=(np.power(texture, 1/2.2)).astype(np.float32),
+            format="RGBAFormat",
+            type="FloatType",
+            magFilter="NearestFilter",
+            minFilter="NearestFilter",
+            encoding="sRGBEncoding"
+        )
+
+        mat = p3s.MeshLambertMaterial(side="DoubleSide",
+                                      map=texture,
+                                      transparent=True)
+        mesh = p3s.Mesh(geo, mat)
+
+        meas_surface.recompute_bbox()
+        bbox = meas_surface.bbox()
+        pmin, pmax = bbox.min, bbox.max
+        self._add_child(mesh, pmin, pmax, persist=False)
+
     def plot_scene(self):
         """
         Plots the meshes that make the scene

@@ -134,10 +134,12 @@ def triangulate_elevation(elevation: mi.TensorXf) -> mi.Mesh:
     first_half_mask = dr.arange(mi.UInt, faces_count) < faces_count / 2
     # TODO verify that this isn't backwards?
     dr.scatter(target=faces,
-               value=mi.Vector3u(ii, ii + 1, ii + num_cols + 1),
+            #    value=mi.Vector3u(ii, ii + 1, ii + num_cols + 1),
+               value=mi.Vector3u(ii, ii + num_cols + 1, ii + 1),
                index=dr.compress(first_half_mask))
     dr.scatter(target=faces,
-               value=mi.Vector3u(ii, ii + num_cols + 1, ii + num_cols),
+            #    value=mi.Vector3u(ii, ii + num_cols + 1, ii + num_cols),
+               value=mi.Vector3u(ii, ii + num_cols, ii + num_cols + 1),
                index=dr.compress(~first_half_mask))
 
     mesh = mi.Mesh(name="triangulated_elevation",

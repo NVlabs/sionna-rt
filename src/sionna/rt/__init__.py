@@ -35,7 +35,7 @@ from .constants import InteractionType,\
                        INVALID_SHAPE,\
                        INVALID_PRIMITIVE
 from .path_solvers import PathSolver, Paths
-from .radio_map_solvers import RadioMapSolver, PlanarRadioMap, MeshRadioMap, RadioMap
+from .radio_map_solvers import RadioMapSolver, PlanarRadioMap, MeshRadioMap, DemRadioMap, RadioMap
 from .preview import Previewer
 from .scene_object import SceneObject
 from .sliced_integrator import SlicedPathIntegrator, SlicedDepthIntegrator

@@ -58,20 +58,9 @@ class DemRadioMap(MeshRadioMap):
         meas_surface = triangulate_elevation(elevation)
         center = mi.Point3f(center)
         orientation = mi.Point3f(orientation)
-        orientation_deg = orientation * 180. / dr.pi
         size = mi.Point2f(size)
-        to_world = mi.Transform4f().translate(center) \
-                                .rotate([0., 0., 1.], orientation_deg.x) \
-                                .rotate([0., 1., 0.], orientation_deg.y) \
-                                .rotate([1., 0., 0.], orientation_deg.z) \
-                                .scale([0.5 * size.x, 0.5 * size.y, 1])
-        params = mi.traverse(meas_surface)
-        # Apply the to_world transformation
-        vertices = dr.reshape(mi.Point3f, params["vertex_positions"], (3, -1))
-        vertices = to_world @ vertices
-        params["vertex_positions"] = dr.ravel(vertices)
+        # TODO respect the frame
 
-        params.update()
         super().__init__(scene, meas_surface=meas_surface)
 
         self._elevation = elevation
@@ -141,9 +130,13 @@ class DemRadioMap(MeshRadioMap):
 
         :type: :py:class:`mi.TensorXf [cells_per_dim_y, cells_per_dim_x, 3]`
         """
-        # TODO create UV coordinates in a unit grid with the correct number of cells
-        grid = ...
-        points = self._meas_surface.eval_parameterization(grid)
+        cells_per_dim_x = self._cells_per_dim.x[0]
+        cells_per_dim_y = self._cells_per_dim.y[0]
+        u, v = dr.meshgrid(
+            (dr.arange(mi.UInt, size=cells_per_dim_x) + 0.5) / cells_per_dim_x,
+            (dr.arange(mi.UInt, size=cells_per_dim_y) + 0.5) / cells_per_dim_y
+        )
+        points = self._meas_surface.eval_parameterization(mi.Point2f(u, v))
         shape = (self._cells_per_dim.y[0], self._cells_per_dim.x[0], 3)
         return dr.reshape(mi.TensorXf, points, shape)
 
@@ -167,29 +160,40 @@ class DemRadioMap(MeshRadioMap):
         grid_shape = (self.num_tx, cells_per_dim_y, cells_per_dim_x)
         pathgain_map_grid = dr.zeros(mi.TensorXf, shape=grid_shape)
 
-        num_faces = len(pathgain_map.array)
-        upper_indices = dr.arange(mi.UInt, start=0, stop=num_faces // 2)
-        lower_indices = dr.arange(mi.UInt, start=num_faces // 2, stop=num_faces)
-        # [num_tx * cells_per_dim_y * cells_per_dim_x]
-        all_grid_indices = dr.arange(mi.UInt, size=len(pathgain_map_grid.array))
-        # [num_tx * cells_per_dim_y * cells_per_dim_x]
-        upper_face_values = dr.gather(mi.Float, pathgain_map.array, upper_indices)
-        # [num_tx * cells_per_dim_y * cells_per_dim_x]
-        lower_face_values = dr.gather(mi.Float, pathgain_map.array, lower_indices)
-        # TODO make this work for multiple transmitters
-        dr.scatter_add(target=pathgain_map_grid.array,
-                       value=upper_face_values,
-                       index=all_grid_indices,
-                       active=~dr.isnan(upper_face_values))
-        dr.scatter_add(target=pathgain_map_grid.array,
-                       value=lower_face_values,
-                       index=all_grid_indices,
-                       active=~dr.isnan(lower_face_values))
-        # [num_tx * cells_per_dim_y * cells_per_dim_x]
-        count = dr.zeros(mi.TensorXu, grid_shape)
-        dr.scatter_add(count.array, 1, all_grid_indices, ~dr.isnan(upper_face_values))
-        dr.scatter_add(count.array, 1, all_grid_indices, ~dr.isnan(lower_face_values))
-        pathgain_map_grid /= count
+        num_faces = 2 * self.cells_count
+        # TODO vectorize this over transmitters
+        for tx in range(self.num_tx):
+            idx = mi.UInt(tx * num_faces)
+            upper_indices = idx + dr.arange(mi.UInt, 0, num_faces // 2)
+            lower_indices = idx + dr.arange(mi.UInt, num_faces // 2, num_faces)
+            all_grid_indices = idx + dr.arange(mi.UInt, size=self.cells_count)
+            # [num_tx * cells_per_dim_y * cells_per_dim_x]
+            upper_face_values = dr.gather(dtype=mi.Float,
+                                          source=pathgain_map.array,
+                                          index=upper_indices)
+            # [num_tx * cells_per_dim_y * cells_per_dim_x]
+            lower_face_values = dr.gather(dtype=mi.Float,
+                                          source=pathgain_map.array,
+                                          index=lower_indices)
+            dr.scatter_add(target=pathgain_map_grid.array,
+                           value=upper_face_values,
+                           index=all_grid_indices,
+                           active=~dr.isnan(upper_face_values))
+            dr.scatter_add(target=pathgain_map_grid.array,
+                           value=lower_face_values,
+                           index=all_grid_indices,
+                           active=~dr.isnan(lower_face_values))
+            # [num_tx * cells_per_dim_y * cells_per_dim_x]
+            count = dr.zeros(mi.TensorXu, grid_shape)
+            dr.scatter_add(target=count.array,
+                           value=1,
+                           index=all_grid_indices,
+                           active=~dr.isnan(upper_face_values))
+            dr.scatter_add(target=count.array,
+                           value=1,
+                           index=all_grid_indices,
+                           active=~dr.isnan(lower_face_values))
+            pathgain_map_grid /= count
         self._pathgain_map = pathgain_map_grid
 
     def resample(self, resolution: mi.Point2u):
