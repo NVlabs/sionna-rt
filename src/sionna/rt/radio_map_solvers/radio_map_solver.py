@@ -18,6 +18,7 @@ from sionna.rt.scene import extend_scene_with_mesh
 from .radio_map import RadioMap
 from .planar_radio_map import PlanarRadioMap
 from .mesh_radio_map import MeshRadioMap
+from .dem_radio_map import DemRadioMap
 
 
 class RadioMapSolver:
@@ -219,6 +220,7 @@ class RadioMapSolver:
         size : mi.Point2f | None = None,
         cell_size : mi.Point2f = mi.Point2f(10, 10),
         measurement_surface : mi.Shape | SceneObject | None = None,
+        digital_elevation_model : mi.TensorXf | None = None,
         precoding_vec : Tuple[mi.TensorXf, mi.TensorXf] | None = None,
         samples_per_tx : int = 1000000,
         max_depth : int = 3,
@@ -265,6 +267,13 @@ class RadioMapSolver:
         :param measurement_surface: Measurement surface. If set, the
             radio map is computed for this surface, where every triangle in the
             mesh is a cell in the radio map.
+            If set to `None`, then the radio map is computed for a measurement
+            grid defined by ``center``, ``orientation``, ``size``, and ``cell_size``.
+
+        :param digital_elevation_model: Digital Elevation Model (DEM). If set, 
+            the provided DEM is triangulated, the radio map is computed on that
+            surface, and the results are rearranged back into a grid with the
+            same shape as the provided DEM. 
             If set to `None`, then the radio map is computed for a measurement
             grid defined by ``center``, ``orientation``, ``size``, and ``cell_size``.
 
@@ -358,14 +367,18 @@ class RadioMapSolver:
         self._sampler.seed(seed, num_samples)
 
         # Build Radio Map instance
-        # If a measurement surface is provided, then it is a mesh radio map.
-        # Moreover, in this case, the Mitsuba scene is modified by adding the
-        # measurement surface to the scene.
-        if measurement_surface is not None:
+        # Modify the scene for non-planar radio maps.
+        if measurement_surface and digital_elevation_model:
+            raise ValueError("At most one of `measurement_surface` and `digital_elevation_model` can be provided.")
+        elif measurement_surface:
             if isinstance(measurement_surface, SceneObject):
                 measurement_surface = measurement_surface.mi_mesh
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
             radio_map = MeshRadioMap(scene, measurement_surface)
+        elif digital_elevation_model:
+            radio_map = DemRadioMap(scene, digital_elevation_model)
+            measurement_surface = radio_map.measurement_surface
+            modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
         else:
             modified_scene = scene.mi_scene
             radio_map = PlanarRadioMap(scene, cell_size, center, orientation, size)
