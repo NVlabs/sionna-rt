@@ -381,7 +381,6 @@ class RadioMapSolver:
                                     elevation=digital_elevation_model,
                                     cell_size=cell_size,
                                     center=center,
-                                    orientation=orientation,
                                     size=size)
             measurement_surface = radio_map.measurement_surface
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
