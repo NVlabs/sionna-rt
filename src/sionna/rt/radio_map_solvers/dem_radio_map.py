@@ -10,14 +10,26 @@ from typing import List, TYPE_CHECKING
 if TYPE_CHECKING:
     from ..scene import Scene
 
+def _resample_tensor(tensor: mi.TensorXf, res: mi.Point2u):
+    if tensor.ndim != 2:
+        raise ValueError("_resample_tensor requires tensor to be 2D.")
+    # The resample() function needs this to be the scalar type
+    res = mi.ScalarPoint2u(res.x[0], res.y[0])
+    if dr.all(mi.ScalarPoint2u(tensor.shape) == res):
+        # Resampling to current size is a no-op
+        return tensor
+    bitmap = mi.Bitmap(tensor, mi.Bitmap.PixelFormat.Y)
+    resampled = mi.TensorXf(bitmap.resample(res))
+    return dr.reshape(mi.TensorXf, resampled, res)
+
 class DemRadioMap(RadioMap):
     def __init__(self,
                  scene : "Scene",
                  elevation : mi.TensorXf,
-                 cell_size : mi.Point2f,
+                 cell_size : mi.Point2f = None,
                  center : mi.Point3f | None = None,
                  size : mi.Point2f | None = None):
-  
+
         if center is None or size is None:
             # [min_x, min_y, min_z]
             scene_min = scene.mi_scene.bbox().min
@@ -43,7 +55,6 @@ class DemRadioMap(RadioMap):
             elevation = mi.TensorXf(elevation)
 
         super().__init__(scene)
-        # Number of cells
         self._size = size
         self._center = center
         self._cell_size = cell_size
@@ -51,7 +62,7 @@ class DemRadioMap(RadioMap):
 
         # Builds the Mitsuba mesh modeling the measurement surface
         elevation_resolution = self._cells_per_dim + mi.Point2u(1, 1)
-        self._elevation = self._resample_tensor(elevation, elevation_resolution)
+        self._elevation = _resample_tensor(elevation, elevation_resolution)
         self._meas_surface = triangulate_elevation(self._elevation, center, size)
 
         cells_per_dim = self._cells_per_dim
@@ -96,7 +107,7 @@ class DemRadioMap(RadioMap):
         points = self._meas_surface.eval_parameterization(mi.Point2f(u, v))
         shape = (self._cells_per_dim.y[0], self._cells_per_dim.x[0], 3)
         return dr.reshape(mi.TensorXf, points, shape)
-    
+
     @property
     def path_gain(self):
         r"""Path gains across the radio map from all transmitters
@@ -208,13 +219,16 @@ class DemRadioMap(RadioMap):
         """
         return self._cells_per_dim
 
-    def resample(self, cell_size: mi.Point2f):
-        cell_size = mi.Point2f(cell_size)
+    def resample(self, cell_size: mi.Point2f | None = None):
         original_shape = mi.Point2f(self._original_pathgain_map.shape[1:])
         original_cell_size = self._size / original_shape
+        if cell_size is None:
+            cell_size = original_cell_size
+        cell_size = mi.Point2f(cell_size)
         # The new resolution must be at most as large as the provided elevation
         # data. Any more and the resampling leads to significant error. Resolve
-        # this by increasing cell size or using a higher resolution DEM.
+        # this by increasing the target resampled cell size or recomputing the
+        # Radio Map using a smaller cell size.
         if cell_size.x < original_cell_size.x:
             raise ValueError(f"`cell_size.x` must be greater than or equal to "
                              f"{original_cell_size.x[0]}.")
@@ -223,19 +237,16 @@ class DemRadioMap(RadioMap):
                              f"{original_cell_size.y[0]}.")
 
         res = mi.Point2u(dr.ceil(self._size / cell_size))
-        if dr.all(res == original_shape):
-            # Resampling to current size is a no-op
-            return
         self._cells_per_dim = mi.Vector2u(res.x, res.y)
 
         # Resize the pathgain map
         pathgain_map = dr.zeros(mi.TensorXf, (self.num_tx, res.y[0], res.x[0]))
         for tx in range(self.num_tx):
             tmp = self._original_pathgain_map[tx, ...]
-            pathgain_map[tx, ...] = self._resample_tensor(tmp, res).array
+            pathgain_map[tx, ...] = _resample_tensor(tmp, res).array
         self._pathgain_map = pathgain_map
         # Resize the stored elevation map
-        self._elevation = self._resample_tensor(self._original_elevation, res)
+        self._elevation = _resample_tensor(self._original_elevation, res)
 
     ###############################################
     # Internal methods
@@ -270,13 +281,3 @@ class DemRadioMap(RadioMap):
         v1 = meas_surface.vertex_position(prim_index[1])
         v2 = meas_surface.vertex_position(prim_index[2])
         return dr.norm(dr.cross(v1 - v0, v2 - v0)) / 2
-
-
-    def _resample_tensor(self, tensor: mi.TensorXf, res: mi.Point2u):
-        if tensor.ndim != 2:
-            raise ValueError("_resample_tensor requires tensor to be 2D.")
-        # The resample() function needs this to be the scalar type
-        res = mi.ScalarPoint2u(res.x[0], res.y[0])
-        bitmap = mi.Bitmap(tensor, mi.Bitmap.PixelFormat.Y)
-        resampled = mi.TensorXf(bitmap.resample(res))
-        return dr.reshape(mi.TensorXf, resampled, res)
