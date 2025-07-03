@@ -90,7 +90,7 @@ class DemRadioMap(RadioMap):
         """
         cells_per_dim = self._cells_per_dim
         return cells_per_dim.x[0] * cells_per_dim.y[0]
-    
+
     @property
     def cell_centers(self):
         r"""Positions of the centers of the cells in the global coordinate
@@ -104,7 +104,16 @@ class DemRadioMap(RadioMap):
             (dr.arange(mi.UInt, size=cells_per_dim_x) + 0.5) / cells_per_dim_x,
             (dr.arange(mi.UInt, size=cells_per_dim_y) + 0.5) / cells_per_dim_y
         )
-        points = self._meas_surface.eval_parameterization(mi.Point2f(u, v))
+        scaled_uv = self.size * mi.Point2f(u, v)
+        ray_origin = mi.Point3f(scaled_uv.x, scaled_uv.y, 0)
+        ray = mi.Ray3f(o=ray_origin, d=mi.Point3f(0, 0, 1))
+        # It makes more sense to use eval_parameterization() here, but that
+        # segfaults for common inputs (cause unknown). This is a workaround
+        # leveraging the fact that triangulate_elevation() creates texcoords
+        # by flattening the vertices to a unit square in the XY plane. This 
+        # will not work if elevation values are negative.
+        scene = mi.load_dict({"type": "scene", "mesh": self._meas_surface})
+        points = scene.ray_intersect(ray).p
         shape = (self._cells_per_dim.y[0], self._cells_per_dim.x[0], 3)
         return dr.reshape(mi.TensorXf, points, shape)
 
