@@ -13,7 +13,7 @@ import pytest
 import sionna.rt as rt
 from sionna.rt import load_scene, Transmitter, PlanarArray, ITURadioMaterial,\
     Receiver, PathSolver, RadioMapSolver, BackscatteringPattern
-from sionna.rt.utils import dbm_to_watt, load_mesh, transform_mesh
+from sionna.rt.utils import dbm_to_watt, load_mesh, transform_mesh, triangulate_elevation, clone_mesh
 
 
 ####################################################
@@ -594,6 +594,85 @@ def test_mesh_radio_map(los):
 
     nmse_db = 10*np.log10(np.mean( ((rm.path_gain[0]-a)/a)**2 ))
     assert nmse_db < -20
+
+def test_dem_radio_map():
+    # Create terrain mesh with a bump in the middle
+    vert_x, vert_y = np.meshgrid(np.linspace(0, 10, 100),
+                                 np.linspace(0, 10, 100),
+                                 indexing="xy")
+    elevation = np.exp(-((vert_x-5)**2 + (vert_y-5)**2)) / 5
+    terrain_mesh = triangulate_elevation(elevation=mi.TensorXf(elevation),
+                                           center=[0, 0, 0],
+                                           size=[1, 1])
+    # Add to a dynamically defined scene
+    props = mi.Properties()
+    # Use a non-concrete material to test transmission
+    props["bsdf"] = rt.ITURadioMaterial("mat", itu_type="glass", thickness=1)
+    props["bsdf"] = rt.HolderMaterial(props)
+    terrain_mesh = clone_mesh(terrain_mesh, name="terrain", props=props)
+    scene = rt.Scene(mi.load_dict({
+        "type": "scene",
+        "terrain": terrain_mesh
+    }))
+
+    scene.tx_array = default_array()
+    scene.rx_array = default_array(polarization="VH")
+    tx = rt.Transmitter(name="tx",
+                    position=mi.Point3f(.2, .2, 0.1),
+                    orientation=mi.Point3f(0,0,0))
+    tx.display_radius = 0.01
+    scene.add(tx)
+
+    rm_solver = rt.RadioMapSolver()
+    sim_params = {
+        "specular_reflection": True,
+        "diffuse_reflection": True,
+        "refraction": True,
+        "max_depth": 5,
+    }
+    # Compute the radio map as a DEM
+    rm_dem = rm_solver(scene=scene,
+                       center=[0, 0, 0],
+                       size=[1, 1],
+                       cell_size=[0.01, 0.01],
+                       # evaluate 5cm above the surface
+                       digital_elevation_model=mi.TensorXf(elevation) + 0.05,
+                       samples_per_tx=int(1e8),
+                       **sim_params)
+    # Compute the radio map as a mesh
+    rm_mesh = rm_solver(scene=scene,
+                        center=[0, 0, 0],
+                        size=[1, 1],
+                        measurement_surface=rm_dem.measurement_surface,
+                        samples_per_tx=int(1e8),
+                        **sim_params)
+    
+    # Re-assemble mesh radio map values into a grid
+    meas_surface = rm_mesh.measurement_surface
+    num_faces = meas_surface.face_count()
+    faces = meas_surface.faces_buffer().numpy().reshape(-1, 3)
+    vertices = meas_surface.vertex_positions_buffer().numpy().reshape(-1, 3)
+    tris = vertices[faces]
+    v0, v1, v2 = tris[:, 0, :], tris[:, 1, :], tris[:, 2, :]
+    tri_areas = np.linalg.norm(np.cross(v1 - v0, v2 - v0), axis=-1) / 2
+    # This indexing is tightly coupled to triangulate_elevation()
+    tri_areas_u = tri_areas[:num_faces // 2]
+    tri_areas_d = tri_areas[num_faces // 2:]
+    cell_areas = tri_areas_u + tri_areas_d
+    pg_mesh_u = rm_mesh.path_gain[0][:num_faces // 2]
+    pg_mesh_d = rm_mesh.path_gain[0][num_faces // 2:]
+    # Reweight values based on relative triangle area
+    pg_mesh = (pg_mesh_u * tri_areas_u + pg_mesh_d * tri_areas_d) / cell_areas
+    pg_mesh = pg_mesh.numpy().reshape(100, 100)
+
+    # Compare against DEM radio map values
+    pg_dem = rm_dem.path_gain[0].numpy()
+    with np.errstate(invalid="ignore"):
+        # Silence warning from 0/0 (those values become zero anyway)
+        err = np.where(pg_mesh == 0.0, 0.0, np.abs(pg_mesh - pg_dem) / pg_mesh)
+    nmse_db = 10 * np.log10(np.mean(np.abs(err)**2))
+    assert nmse_db < -20
+
 
 @pytest.mark.parametrize("color_map", [None, np.random.rand(30, 3)])
 def test_show_association(color_map):
