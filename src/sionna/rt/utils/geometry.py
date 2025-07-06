@@ -108,3 +108,47 @@ def rotation_matrix(angles : mi.Point3f) -> mi.Matrix3f:
                            [r_31, r_32, r_33]])
 
     return rot_mat
+
+def triangulate_elevation(
+        elevation: mi.TensorXf,
+        center: mi.Point3f,
+        size: mi.Point2f
+) -> mi.Mesh:
+    num_rows, num_cols = elevation.shape
+    vertices_x, vertices_y = dr.meshgrid(
+        dr.linspace(mi.Float, 0, 1, num_cols),
+        dr.linspace(mi.Float, 0, 1, num_rows)
+    )
+    vertices = mi.Point3f(vertices_x, vertices_y, dr.ravel(elevation))
+    # Transform vertices after projecting to define texcoords
+    center = mi.Point3f(center)
+    size = mi.Point2f(size)
+    texcoords = vertices.xy
+    vertices.xy *= size
+    vertices += center
+
+    vertex_indices = dr.arange(mi.UInt, num_rows * num_cols)
+    faces_count = 2 * (num_rows - 1) * (num_cols - 1)
+    faces = dr.empty(mi.Vector3u, faces_count)
+    is_last_column = (vertex_indices + 1) % num_cols == 0
+    is_last_row = vertex_indices // num_cols == num_rows - 1
+    ii = dr.compress(~is_last_column & ~is_last_row)
+    first_half_mask = dr.arange(mi.UInt, faces_count) < faces_count / 2
+    dr.scatter(target=faces,
+               value=mi.Vector3u(ii, ii + num_cols + 1, ii + 1),
+               index=dr.compress(first_half_mask))
+    dr.scatter(target=faces,
+               value=mi.Vector3u(ii, ii + num_cols, ii + num_cols + 1),
+               index=dr.compress(~first_half_mask))
+
+    mesh = mi.Mesh(name="triangulated_elevation",
+                   face_count=dr.width(faces),
+                   vertex_count=dr.width(vertices),
+                   has_vertex_texcoords=True)
+    params = mi.traverse(mesh)
+    params["vertex_positions"] = dr.ravel(vertices)
+    params["vertex_texcoords"] = dr.ravel(texcoords)
+    params["faces"] = dr.ravel(faces)
+    params.update()
+
+    return mesh

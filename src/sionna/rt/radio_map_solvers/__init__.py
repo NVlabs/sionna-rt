@@ -8,4 +8,5 @@
 from .radio_map_solver import RadioMapSolver
 from .planar_radio_map import PlanarRadioMap
 from .mesh_radio_map import MeshRadioMap
+from .dem_radio_map import DemRadioMap
 from .radio_map import RadioMap

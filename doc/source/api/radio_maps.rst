@@ -26,6 +26,10 @@ of random positions within the scene that have sufficient path gain, RSS, or SIN
     :members:
     :exclude-members: finalize, add
 
+.. autoclass:: sionna.rt.DemRadioMap
+    :members:
+    :exclude-members: finalize, add
+
 .. autoclass:: sionna.rt.RadioMap
     :members:
     :exclude-members: finalize, add

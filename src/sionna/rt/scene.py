@@ -487,7 +487,11 @@ class Scene:
         if show_devices:
             fig.plot_radio_devices(show_orientations=show_orientations)
         if radio_map is not None:
-            if isinstance(radio_map, sionna.rt.MeshRadioMap):
+            if isinstance(radio_map, sionna.rt.DemRadioMap):
+                fig.plot_dem_radio_map(
+                    radio_map, tx=rm_tx, db_scale=rm_db_scale,
+                    vmin=rm_vmin, vmax=rm_vmax, metric=rm_metric)
+            elif isinstance(radio_map, sionna.rt.MeshRadioMap):
                 fig.plot_mesh_radio_map(
                     radio_map, tx=rm_tx, db_scale=rm_db_scale,
                     vmin=rm_vmin, vmax=rm_vmax, metric=rm_metric)

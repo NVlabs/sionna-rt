@@ -356,6 +356,39 @@ def radio_map_to_emissive_shape(radio_map: rt.RadioMap, tx: int | None,
             'emitter': emitter,
         }
 
+    elif isinstance(radio_map, rt.DemRadioMap):
+        # rm_values has per-cell values that need to get applied as a texture.
+        # This works because triangulate_elevation() also assigned texcoords.
+        texture, opacity = radio_map_texture(
+            rm_values, db_scale=db_scale, vmin=vmin, vmax=vmax)
+        bsdf = {
+            'type': 'mask',
+            'opacity': {
+                'type': 'bitmap',
+                'bitmap': mi.Bitmap(opacity.astype(np.float32)),
+                "filter_type": "nearest"
+            },
+            'nested': {
+                'type': 'diffuse',
+                'reflectance': 0.,
+            },
+        }
+
+        emitter = {
+            'type': 'area',
+            'radiance': {
+                'type': 'bitmap',
+                'bitmap': mi.Bitmap(texture.astype(np.float32)),
+                "filter_type": "nearest"
+            },
+        }
+
+        props = mi.Properties()
+        props['bsdf'] = mi.load_dict(bsdf)
+        props['emitter'] = mi.load_dict(emitter)
+        cloned_shape = clone_mesh(radio_map.measurement_surface, props=props)
+        return cloned_shape
+
     elif isinstance(radio_map, rt.MeshRadioMap):
         # rm_values has per-triangle values for the requested tx and metric.
         texture, opacity = radio_map_texture(
