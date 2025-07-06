@@ -23,6 +23,28 @@ def _resample_tensor(tensor: mi.TensorXf, res: mi.Point2u):
     return dr.reshape(mi.TensorXf, resampled, res)
 
 class DemRadioMap(RadioMap):
+    r"""
+    DEM Radio Map
+
+    A DEM-based radio map is computed by a 
+    :doc:`radio map solver <radio_map_solvers>` for a measurement surface
+    defined by a Digital Elevation Model (DEM), also known as a heightmap.
+    The DEM is resampled to the required resolution for the given cell size,
+    and then triangulated to make the measurement surface. Unlike 
+    :class:`~.rt.MeshRadioMap`, this radio map exposes its values as a 2D grid
+    draped over the measurement surface.
+
+    :param scene: Scene for which the radio map is computed
+
+    :param elevation: DEM to use. May be resampled.
+
+    :param cell_size: Size of a cell of the radio map [m]
+
+    :param center: Center of the radio map :math:`(x,y,z)` [m] as a 
+        three-dimensional vector
+
+    :param size:  Size of the radio map [m]
+    """
     def __init__(self,
                  scene : "Scene",
                  elevation : mi.TensorXf,
@@ -62,8 +84,9 @@ class DemRadioMap(RadioMap):
 
         # Builds the Mitsuba mesh modeling the measurement surface
         elevation_resolution = self._cells_per_dim + mi.Point2u(1, 1)
-        self._elevation = _resample_tensor(elevation, elevation_resolution)
-        self._meas_surface = triangulate_elevation(self._elevation, center, size)
+        elevation = _resample_tensor(elevation, elevation_resolution)
+        self._meas_surface = triangulate_elevation(elevation, center, size)
+        self._elevation = elevation
 
         cells_per_dim = self._cells_per_dim
         pathgain_shape = (self.num_tx, cells_per_dim.y[0], cells_per_dim.x[0])
@@ -110,7 +133,7 @@ class DemRadioMap(RadioMap):
         # It makes more sense to use eval_parameterization() here, but that
         # segfaults for common inputs (cause unknown). This is a workaround
         # leveraging the fact that triangulate_elevation() creates texcoords
-        # by flattening the vertices to a unit square in the XY plane. This 
+        # by flattening the vertices to a unit square in the XY plane. This
         # will not work if elevation values are negative.
         scene = mi.load_dict({"type": "scene", "mesh": self._meas_surface})
         points = scene.ray_intersect(ray).p
@@ -119,6 +142,7 @@ class DemRadioMap(RadioMap):
 
     @property
     def path_gain(self):
+        # pylint: disable=line-too-long
         r"""Path gains across the radio map from all transmitters
 
         :type: :py:class:`mi.TensorXf [num_tx, cells_per_dim_y, cells_per_dim_x]`
@@ -229,6 +253,13 @@ class DemRadioMap(RadioMap):
         return self._cells_per_dim
 
     def resample(self, cell_size: mi.Point2f | None = None):
+        r"""Resamples the DEM and path gain tensors to the given resolution.
+
+        :param cell_size: The desired resampled resolution. Cannot be smaller
+            than the cell size used to generate the radio map originally. 
+            Providing :py:class:`None` will reset these tensors to their
+            original values.
+        """
         original_shape = mi.Point2f(self._original_pathgain_map.shape[1:])
         original_cell_size = self._size / original_shape
         if cell_size is None:

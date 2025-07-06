@@ -7,8 +7,6 @@
 import drjit as dr
 import mitsuba as mi
 from typing import Tuple
-import numpy as np
-from numpy.lib.stride_tricks import sliding_window_view
 
 
 def phi_hat(phi : mi.Float) -> mi.Vector3f:

@@ -271,9 +271,8 @@ class RadioMapSolver:
             grid defined by ``center``, ``orientation``, ``size``, and ``cell_size``.
 
         :param digital_elevation_model: Digital Elevation Model (DEM). If set, 
-            the provided DEM is triangulated, the radio map is computed on that
-            surface, and the results are rearranged back into a grid with the
-            same shape as the provided DEM. 
+            the provided DEM is triangulated, the radio map is computed on a 
+            grid draped over the resulting mesh.
             If set to `None`, then the radio map is computed for a measurement
             grid defined by ``center``, ``orientation``, ``size``, and ``cell_size``.
 
@@ -376,7 +375,6 @@ class RadioMapSolver:
             modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
             radio_map = MeshRadioMap(scene, measurement_surface)
         elif digital_elevation_model is not None:
-            # measurement_surface = triangulate_elevation(digital_elevation_model)
             radio_map = DemRadioMap(scene=scene,
                                     elevation=digital_elevation_model,
                                     cell_size=cell_size,
