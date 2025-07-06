@@ -5,6 +5,7 @@ import drjit as dr
 
 from .radio_map import RadioMap
 from sionna.rt.utils.geometry import triangulate_elevation
+from sionna.rt.constants import EPSILON_FLOAT
 from typing import List, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -128,7 +129,8 @@ class DemRadioMap(RadioMap):
             (dr.arange(mi.UInt, size=cells_per_dim_y) + 0.5) / cells_per_dim_y
         )
         scaled_uv = self.size * mi.Point2f(u, v)
-        ray_origin = mi.Point3f(scaled_uv.x, scaled_uv.y, 0)
+        min_z = self.measurement_surface.bbox().min.z - EPSILON_FLOAT
+        ray_origin = mi.Point3f(scaled_uv.x, scaled_uv.y, min_z)
         ray = mi.Ray3f(o=ray_origin, d=mi.Point3f(0, 0, 1))
         # It makes more sense to use eval_parameterization() here, but that
         # segfaults for common inputs (cause unknown). This is a workaround
