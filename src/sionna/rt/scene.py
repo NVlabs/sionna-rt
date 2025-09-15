@@ -401,7 +401,16 @@ class Scene:
         # Reset the preview widget to ensure the preview is redraw
         self.scene_geometry_updated()
 
-    def close(self):
+    def close(self) -> None:
+        r"""
+        Closes the scene and releases all scene objects and radio materials
+        """
+
+        for so in self.objects.values():
+            so._scene = None
+            if isinstance(so.radio_material, RadioMaterialBase):
+                so.radio_material.remove_object()
+
         for mat in self.radio_materials:
             self.remove(mat)
 

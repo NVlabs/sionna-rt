@@ -59,3 +59,37 @@ def test_scene_edit_should_not_add_scene_object_if_has_scene():
         s2.edit(add=box)
 
     assert len(s2.mi_scene.shapes()) == 0
+
+
+def test_scene_close_and_reuse_scene_object():
+    s1 = load_scene(sionna.rt.scene.box_one_screen, merge_shapes=False)
+    s2 = sionna.rt.Scene()
+
+    box = s1.objects["box"]
+    box_mat = box.radio_material
+
+    with pytest.raises(ValueError):
+        s2.add(box_mat)
+
+    with pytest.raises(ValueError):
+        s2.edit(add=box)
+
+    # Should not add box's mi_mesh into s2 since it belongs to s1
+    assert len(s2.mi_scene.shapes()) == 0
+
+    # Close s1
+    s1.close()
+
+    # Check radio material is removed from s1
+    assert box_mat._count_using_objects == 0
+    assert box_mat.scene is None
+
+    # Check box is removed from s1
+    assert box.scene is None
+    assert box.radio_material == box_mat
+
+    # Should allow to add the radio material to another scene
+    s2.edit(add=box)
+    assert len(s2.mi_scene.shapes()) == 1
+    assert box.scene == s2
+    assert box_mat.scene == s2
