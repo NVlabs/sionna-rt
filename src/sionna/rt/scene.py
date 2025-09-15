@@ -389,6 +389,10 @@ class Scene:
         # Reset the preview widget to ensure the preview is redraw
         self.scene_geometry_updated()
 
+    def close(self):
+        for mat in self.radio_materials:
+            self.remove(mat)
+
     def preview(self, *,
         background: str=DEFAULT_PREVIEW_BACKGROUND_COLOR,
         clip_at: float | None=None,
