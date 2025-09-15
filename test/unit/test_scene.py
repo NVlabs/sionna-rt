@@ -3,6 +3,8 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
+import os
+
 import pytest
 import drjit as dr
 import mitsuba as mi
@@ -117,3 +119,49 @@ def test_scene_auto_remove_2():
     assert TEST_DUPLICATE_MATERIAL.scene == s1
     s1.close()
     assert TEST_DUPLICATE_MATERIAL.scene is None
+
+
+def test_scene_edit_remove():
+    s1 = load_scene(sionna.rt.scene.box_one_screen, merge_shapes=False)
+    s2 = sionna.rt.Scene()
+
+    box = s1.objects["box"]
+    with pytest.raises(ValueError):
+        s2.edit(add=box)
+
+    s1.edit(remove="box")
+    assert "box" not in s1.objects
+    assert box.scene is None
+    assert box.radio_material is not None
+    assert box.radio_material._count_using_objects == 1
+    assert box.radio_material.scene is None
+    assert len(s1.mi_scene.shapes()) == 1  # only screen remains
+
+    s2.edit(add=box)
+    assert box.scene == s2
+    assert box.radio_material is not None
+    assert box.radio_material._count_using_objects == 1
+    assert box.radio_material.scene == s2
+    assert len(s2.mi_scene.shapes()) == 1
+
+
+def test_scene_object_and_radio_material():
+    fname = os.path.join(os.path.dirname(__file__), "../data/subdivided_cube.ply")
+
+    s1 = sionna.rt.Scene()
+    mat = ITURadioMaterial("test-material", "concrete", 1.0)
+    assert mat._count_using_objects == 0
+
+    so = SceneObject(fname=fname, name="test-object", radio_material=mat)
+    assert so.radio_material._count_using_objects == 1
+
+    s1.edit(add=so)
+    assert so.radio_material._count_using_objects == 1
+
+    s1.edit(remove="test-object")
+    assert so.radio_material._count_using_objects == 1
+    assert so.scene is None
+
+    s2 = sionna.rt.Scene()
+    s2.edit(add=so)
+    assert so.radio_material._count_using_objects == 1

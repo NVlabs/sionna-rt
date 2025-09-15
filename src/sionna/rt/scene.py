@@ -1315,11 +1315,18 @@ def edit_scene_shapes(
 
         for v in remove:
             if isinstance(v, SceneObject):
+                v._scene = None
+                if isinstance(v.radio_material, RadioMaterialBase):
+                    v.radio_material._scene = None
+
                 v = v.mi_mesh
 
             if isinstance(v, str):
                 o = scene.objects.get(v)
                 if o:
+                    o._scene = None
+                    if isinstance(o.radio_material, RadioMaterialBase):
+                        o.radio_material._scene = None
                     mi_id = o.mi_mesh.id()
                     ids_to_remove.add(mi_id)
             elif isinstance(v, mi.Shape):
