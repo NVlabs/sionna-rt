@@ -328,6 +328,9 @@ class Scene:
                 raise ValueError(f"Cannot remove the radio material '{name}'"
                                   " because it is still used by at least one"
                                   " object")
+
+            # Allow the radio material to be reused in another scene
+            self._radio_materials[name]._scene = None
             del self._radio_materials[name]
         elif isinstance(item, Transmitter):
             del self._transmitters[name]
