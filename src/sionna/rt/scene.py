@@ -364,6 +364,20 @@ class Scene:
             to be added
         """
 
+        # Sanity check for the inputs
+        if add is not None:
+            if isinstance(add, (mi.Object, dict, SceneObject)):
+                add = [add]
+
+            # Check SceneObject is not used in another scene
+            for a in add:
+                if isinstance(a, SceneObject):
+                    if a._scene is not None and a._scene is not self:
+                        raise ValueError(f"Cannot add the object '{a.name}'"
+                                         " because it is already part of"
+                                         " another scene")
+
+
         # Set the Mitsuba scene to the edited scene
         self._scene = edit_scene_shapes(self, add=add, remove=remove)
         # Reset the scene params
@@ -374,8 +388,6 @@ class Scene:
         # the users valid
         scene_objects = self._scene_objects
         if add is not None:
-            if isinstance(add, sionna.rt.SceneObject):
-                add = [add]
             scene_objects.update({o.name : o for o in add})
         self._scene_objects = {}
         for s in self._scene.shapes():

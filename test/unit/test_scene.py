@@ -46,3 +46,16 @@ def test_scene_remove_radio_material():
 
     # Should allow to add the radio material to another scene
     s2.add(m1)
+
+
+def test_scene_edit_should_not_add_scene_object_if_has_scene():
+    s1 = load_scene(sionna.rt.scene.box_one_screen, merge_shapes=False)
+    s2 = sionna.rt.Scene()
+
+    assert len(s2.mi_scene.shapes()) == 0
+
+    box = s1.objects["box"]
+    with pytest.raises(ValueError):
+        s2.edit(add=box)
+
+    assert len(s2.mi_scene.shapes()) == 0
