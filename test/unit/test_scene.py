@@ -86,7 +86,7 @@ def test_scene_close_and_reuse_scene_object():
     s1.close()
 
     # Check radio material is removed from s1
-    assert box_mat._count_using_objects == 0
+    assert box_mat._count_using_objects == 1
     assert box_mat.scene is None
 
     # Check box is removed from s1
@@ -164,4 +164,27 @@ def test_scene_object_and_radio_material():
 
     s2 = sionna.rt.Scene()
     s2.edit(add=so)
+    assert so.radio_material._count_using_objects == 1
+
+
+def test_scene_object_and_radio_material_after_scene_close():
+    fname = os.path.join(os.path.dirname(__file__), "../data/subdivided_cube.ply")
+
+    s1 = sionna.rt.Scene()
+    mat = ITURadioMaterial("test-material", "concrete", 1.0)
+    assert mat._count_using_objects == 0
+
+    so = SceneObject(fname=fname, name="test-object", radio_material=mat)
+    assert so.radio_material._count_using_objects == 1
+
+    s1.edit(add=so)
+    assert so.radio_material._count_using_objects == 1
+
+    # Close s1
+    s1.close()
+    assert so.radio_material._count_using_objects == 1
+
+    s2 = sionna.rt.Scene()
+    s2.edit(add=so)
+    s2.close()
     assert so.radio_material._count_using_objects == 1

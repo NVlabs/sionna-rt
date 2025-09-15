@@ -408,11 +408,10 @@ class Scene:
 
         for so in self.objects.values():
             so._scene = None
-            if isinstance(so.radio_material, RadioMaterialBase):
-                so.radio_material.remove_object()
+            so.radio_material._scene = None
 
-        for mat in self.radio_materials:
-            self.remove(mat)
+        for mat in self.radio_materials.values():
+            mat._scene = None
 
     def preview(self, *,
         background: str=DEFAULT_PREVIEW_BACKGROUND_COLOR,
