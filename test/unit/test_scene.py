@@ -10,6 +10,9 @@ import sionna
 from sionna.rt import load_scene, SceneObject, ITURadioMaterial
 
 
+TEST_DUPLICATE_MATERIAL = ITURadioMaterial("test-duplicate-material", "concrete", 1.0)
+
+
 def test_scene_close_and_reuse_radio_material():
     s1 = sionna.rt.Scene()
     s2 = sionna.rt.Scene()
@@ -93,3 +96,24 @@ def test_scene_close_and_reuse_scene_object():
     assert len(s2.mi_scene.shapes()) == 1
     assert box.scene == s2
     assert box_mat.scene == s2
+
+
+def test_scene_auto_remove_1():
+    s1 = sionna.rt.Scene()
+
+    s1.add(TEST_DUPLICATE_MATERIAL)
+
+
+def test_scene_auto_remove_2():
+    s1 = sionna.rt.Scene()
+
+    # Should failed, we don't have __del__ to finalize the scene
+    with pytest.raises(ValueError):
+        s1.add(TEST_DUPLICATE_MATERIAL)
+
+    TEST_DUPLICATE_MATERIAL._scene = None
+    s1.add(TEST_DUPLICATE_MATERIAL)
+
+    assert TEST_DUPLICATE_MATERIAL.scene == s1
+    s1.close()
+    assert TEST_DUPLICATE_MATERIAL.scene is None
