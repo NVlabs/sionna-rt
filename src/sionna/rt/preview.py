@@ -10,6 +10,7 @@ import numpy as np
 from ipywidgets import widgets
 from ipywidgets.embed import embed_snippet
 import pythreejs as p3s
+from IPython.core.interactiveshell import InteractiveShell
 from IPython.display import display
 import matplotlib as mpl
 
@@ -585,8 +586,11 @@ class Previewer:
             value=f"<div style='{style}'></div> {label}")
                          for label, style in legend_items]
         legend = widgets.VBox(legend_labels)
-        # Display the renderer and legend together
-        display(widgets.HBox([self._renderer, legend]))
+
+        # Check if we are in a IPython interactive shell
+        if InteractiveShell.initialized():
+            # Display the renderer and legend together
+            display(widgets.HBox([self._renderer, legend]))
 
     ##################################################
     # Accessors
