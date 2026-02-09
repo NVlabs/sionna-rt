@@ -16,7 +16,6 @@ import mitsuba as mi
 
 import sionna
 from .constants import DEFAULT_THICKNESS
-from .radio_materials.itu import ITU_MATERIALS_PROPERTIES
 from .scene_object import SceneObject
 from .utils.meshes import remove_mesh_duplicate_vertices
 
@@ -96,8 +95,7 @@ def process_xml(xml_string: str,
                 bsdf.attrib["id"] = mat_id
             for k, (t, v) in props.items():
                 bsdf.append(ET.Element(t, {"name": k, "value": str(v)}))
-        elif (bsdf_type != "itu-radio-material") \
-             and (name in ITU_MATERIALS_PROPERTIES):
+        elif bsdf_type != "itu-radio-material":
             raise ValueError(
                 f"Found material with name \"{mat_id}\"."
                 " ITU material names must start with \"itu_\","
