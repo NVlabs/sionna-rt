@@ -518,7 +518,7 @@ def test_diffraction_street_canyon():
                             diffraction=True,
                             diffraction_lit_region=True)
 
-    rx_indices = [(120, 120), (160, 50), (160, 150), (120, 200), (220, 100),
+    rx_indices = [(120, 120), (170, 50), (160, 60), (120, 200), (220, 100),
                   (175, 350)]
     for i, p in enumerate(rx_indices):
         rx_pos = rmap.cell_centers[p[0], p[1]]

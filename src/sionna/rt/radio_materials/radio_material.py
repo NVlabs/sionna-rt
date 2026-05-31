@@ -1078,16 +1078,17 @@ class RadioMaterial(RadioMaterialBase):
         w_n_out = jones_matrix_rotator(ko_local, e_r_s_n_hat, phi_hat)
 
         # Compute fresnel coefficients for both faces
+        wavelength = dr.two_pi / wavenumber
         r_te_0, r_tm_0, _, _ =\
             itu_coefficients_single_layer_slab(dr.abs(dr.sin(phi_prime)),
                                                eta,
                                                self._d,
-                                               wavenumber)
+                                               wavelength)
         r_te_n, r_tm_n, _, _ =\
             itu_coefficients_single_layer_slab(dr.abs(dr.sin(exterior_angle-phi)),
                                                eta,
                                                self._d,
-                                               wavenumber)
+                                               wavelength)
         #
         # Construct R_0 and R_n matrices
         #
