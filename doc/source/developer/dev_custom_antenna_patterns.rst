@@ -190,7 +190,7 @@ antenna patterns.
 
     # Switch the computation of field loop to "evaluated" mode to
     # enable gradient backpropagation through the loop
-    solver.field_calculator.loop_mode = "evaluated"
+    solver.loop_mode = "evaluated"
 
     # Compute propagation paths
     paths = solver(scene, max_depth=0)
@@ -201,9 +201,9 @@ antenna patterns.
 
     # Compute gradients
     dr.backward(power)
-    print(opt.variables["theta_t"].grad)
-    print(opt.variables["phi_t"].grad)
-    print(opt.variables["lambda"].grad)
+    print(opt["theta_t"].grad)
+    print(opt["phi_t"].grad)
+    print(opt["lambda"].grad)
 
 ::
 
