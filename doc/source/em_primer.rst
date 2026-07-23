@@ -431,7 +431,7 @@ The baseband equivalent channel impulse reponse is then defined as (Eq. 2.28) :c
 Reflection and Refraction
 *************************
 
-When a plane wave hits a plane interface which separates two materials, e.g., air and concrete, a part of the wave gets reflected and the other transmitted (or *refracted*), i.e., it propagates into the other material.  We assume in the following description that both materials are uniform non-magnetic dielectrics, i.e., :math:`\mu_r=1`, and follow the definitions as in :cite:p:`ITURP20403`. The incoming wave phasor :math:`\mathbf{E}_\text{i}` is expressed by two arbitrary orthogonal polarization components, i.e.,
+When a plane wave hits a plane interface which separates two materials, e.g., air and concrete, a part of the wave gets reflected and the other transmitted (or *refracted*), i.e., it propagates into the other material.  We assume in the following description that both materials are uniform non-magnetic dielectrics, i.e., :math:`\mu_r=1`, and follow the definitions as in :cite:p:`ITURP20404`. The incoming wave phasor :math:`\mathbf{E}_\text{i}` is expressed by two arbitrary orthogonal polarization components, i.e.,
 
 .. math::
     \mathbf{E}_\text{i} = E_{\text{i},s} \hat{\mathbf{e}}_{\text{i},s} + E_{\text{i},p} \hat{\mathbf{e}}_{\text{i},p}
@@ -589,7 +589,7 @@ to assume that the object has a finite thickness. In such cases, the object can
 be modeled as a slab consisting of a single layer made of the same material, as
 shown in :numref:`fig_slab`. The
 reflection and transmission coefficients, which should be used instead of
-:eq:`fresnel_vac`, are then computed as described in (Section 2.2.2.2) :cite:p:`ITURP20403`:
+:eq:`fresnel_vac`, are then computed as described in (Section 2.2.2.2) :cite:p:`ITURP20404`:
 
 .. math::
     :label: fresnel_slab

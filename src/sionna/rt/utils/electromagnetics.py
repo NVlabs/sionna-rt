@@ -67,10 +67,10 @@ def itu_coefficients_single_layer_slab(
     r"""
     Computes the single-layer slab Fresnel transverse electric and
     magnetic reflection and refraction coefficients assuming the incident wave
-    propagates in vacuum using recommendation ITU-R P.2040 :cite:p:`ITURP20403`
+    propagates in vacuum using recommendation ITU-R P.2040-4 :cite:p:`ITURP20404`
 
     More precisely, this function implements equations (43) and (44) from
-    :cite:p:`ITURP20403`.
+    :cite:p:`ITURP20404`.
 
     :param cos_theta: Cosine of the angle of incidence
     :param eta: Complex-valued relative permittivity of the medium upon which the wave is incident

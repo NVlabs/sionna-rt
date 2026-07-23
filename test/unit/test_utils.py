@@ -64,7 +64,7 @@ def ref_fresnel_reflection_coefficients_simplified(cos_theta, eta):
 
 def ref_itu_coefficient_multi_layer_slab(theta0, eta, d, wavelength, fix_sign=True):
     """
-    Implements the multi-layer model from ITU-R P2040 for computing reflection
+    Implements the multi-layer model from ITU-R P.2040-4 for computing reflection
     and refraction coefficients
     """
 
@@ -159,13 +159,13 @@ def itu_concrete(fc):
 
     fc_GHz = fc / 1e9
 
-    # From ITU-R P.2040, Table 3
+    # From ITU-R P.2040-4, Table 3
     a = 5.24
     b = 0.0
     c = 0.0462
     d = 0.7822
 
-    # From ITU-R P.2040, Equations (28), (29)
+    # From ITU-R P.2040-4, Equations (28), (29)
     sigma = c*np.power(fc_GHz, d)
     eta_r = a*np.power(fc_GHz, b)
 
@@ -179,13 +179,13 @@ def itu_metal(fc):
 
     fc_GHz = fc / 1e9
 
-    # From ITU-R P.2040, Table 3
+    # From ITU-R P.2040-4, Table 3
     a = 1.0
     b = 0.0
     c = 1e7
     d = 0.0
 
-    # From ITU-R P.2040, Equations (28), (29)
+    # From ITU-R P.2040-4, Equations (28), (29)
     sigma = c*np.power(fc_GHz, d)
     eta_r = a*np.power(fc_GHz, b)
 
