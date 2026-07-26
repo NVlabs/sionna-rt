@@ -5,7 +5,7 @@
 """ITU radio materials"""
 
 import mitsuba as mi
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Mapping
 
 from .itu import itu_material, ITU_MATERIALS_PROPERTIES
 from .radio_material import RadioMaterial
@@ -109,14 +109,19 @@ class ITURadioMaterial(RadioMaterial):
         # 2. `color`, `reflectance` or `base_color` property specified in the
         #    props (scene dictionary or XML file).
         # 3. Default color from `ITU_MATERIAL_COLORS`.
+        # 4. Set color to :py:class:`None`, which results in a random color being used.
         if color is None:
-            color = ITURadioMaterial.ITU_MATERIAL_COLORS[itu_type]
             if has_props:
                 for pname in ("color", "reflectance", "base_color"):
                     if pname in props:
                         color = tuple(props[pname])
                         del props[pname]
-                props["color"] = mi.ScalarColor3f(color)
+                        break
+            if color is None:
+                color = ITURadioMaterial.ITU_MATERIAL_COLORS.get(itu_type, None)  # Color is allowed to be left unspecified (e.g., for custom user-defined ITU materials)
+
+        if color is not None and has_props:
+            props["color"] = mi.ScalarColor3f(color)
 
         # Frequency update callback
         def cb(f: float):
@@ -161,3 +166,21 @@ class ITURadioMaterial(RadioMaterial):
 
 mi.register_bsdf("itu-radio-material",
                  lambda props: ITURadioMaterial(props=props))
+
+
+def register_itu_radio_material(
+    name: str,
+    parameters: Mapping[Tuple[float, float], Tuple[float, float, float, float]],
+    color: Tuple[float, float, float] | None = None
+) -> None:
+    # pylint: disable=line-too-long
+    r"""
+    Registers a custom ITU radio material or updates an existing ITU material definition.
+
+    :param name: Name of the ITU radio material to register.
+    :param parameters: A mapping of frequency ranges in GHz ``(f_min, f_max)`` to tuples of ITU parameters ``(a, b, c, d)`` as defined in recommendation ITU-R P.2040.
+    :param color: Optional RGB (red, green, blue) color tuple for rendering/previewing, where each component is in :math:`[0, 1]`. If set to :py:class:`None`, then a random color is used.
+    """
+    ITU_MATERIALS_PROPERTIES[name] = dict(parameters)
+    if color is not None:
+        ITURadioMaterial.ITU_MATERIAL_COLORS[name] = color

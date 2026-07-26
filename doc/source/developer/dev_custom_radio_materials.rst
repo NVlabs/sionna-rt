@@ -1160,3 +1160,124 @@ reflected and a transmitted path.
     {'custom-mat-instance': EnhancedCustomRadioMaterial[g=[0.7]]}
 
 Tracing paths can be done as for the previous example.
+
+Registering Custom Radio Materials Before Loading Scenes
+********************************************************
+
+When loading scene files (e.g. exported from Blender), shapes may reference custom radio materials or new ITU material names.
+To allow Sionna RT to recognize and assign these materials automatically during scene loading, you can register them prior to calling :func:`~sionna.rt.load_scene`.
+
+Registering Custom RadioMaterial Instances
+==========================================
+
+You can register a :class:`~sionna.rt.RadioMaterialBase` instance using :func:`~sionna.rt.register_radio_material`:
+
+.. code-block:: python
+
+    from sionna.rt import RadioMaterial, register_radio_material, load_scene
+
+    # Instantiate custom radio material
+    my_mat = RadioMaterial("my_custom_mat", relative_permittivity=5.0, conductivity=0.01)
+
+    # Register it so scenes can reference "my_custom_mat"
+    register_radio_material(my_mat)
+
+    # Load scene file referencing "my_custom_mat"
+    scene = load_scene("my_scene.xml")
+
+In the scene file (e.g., ``my_scene.xml``), the BSDF node can explicitly use ``type="radio-material"`` (or a generic BSDF type matching the registered material name):
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="radio-material" id="my_custom_mat"/>
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_mat"/>
+        </shape>
+    </scene>
+
+Registering Custom ITU Radio Materials
+======================================
+
+To define a new ITU material or update parameters of existing ITU materials, use :func:`~sionna.rt.register_itu_radio_material`:
+
+.. code-block:: python
+
+    from sionna.rt import register_itu_radio_material, load_scene
+
+    # Register a custom ITU material with frequency parameters (a, b, c, d) and color
+    register_itu_radio_material(
+        "custom_wood",
+        {(0.1, 100.0): (2.5, 0.0, 0.005, 1.0)},
+        (0.4, 0.2, 0.1)
+    )
+
+    # Load scene referencing "itu_custom_wood"
+    scene = load_scene("my_itu_scene.xml")
+
+In the XML scene file, ITU radio materials can be declared using the explicit ``type="itu-radio-material"`` syntax, specifying the ITU material name via the ``type`` property:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="itu_custom_wood">
+            <string name="type" value="custom_wood"/>
+        </bsdf>
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="itu_custom_wood"/>
+        </shape>
+    </scene>
+
+Note that Sionna RT also supports legacy or Blender exported scenes where the BSDF element ID starts with ``itu_`` or ``mat-itu_`` (e.g. ``<bsdf type="diffuse" id="itu_custom_wood"/>``), which is automatically converted to an ITU radio material during scene preprocessing.
+
+Multiple Material Customizations Referencing the Same ITU Material Type
+-----------------------------------------------------------------------
+
+Using the explicit XML syntax (``type="itu-radio-material"``), you can define multiple distinct BSDF nodes with unique IDs that all reference the same ITU material type (whether built-in or custom registered), while providing different overrides such as thickness or color:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="my_custom_thick_wood">
+            <string name="type" value="custom_wood"/>
+            <float name="thickness" value="0.25"/>
+        </bsdf>
+
+        <bsdf type="itu-radio-material" id="my_custom_thin_wood">
+            <string name="type" value="custom_wood"/>
+            <float name="thickness" value="0.02"/>
+        </bsdf>
+
+        <shape type="ply" id="thick_wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_thick_wood"/>
+        </shape>
+        <shape type="ply" id="thin_wall">
+            <string name="filename" value="panel.ply"/>
+            <ref name="bsdf" id="my_custom_thin_wood"/>
+        </shape>
+    </scene>
+
+Overriding Material Attributes (Thickness & Color) in Scene Files
+-----------------------------------------------------------------
+
+For both custom registered :class:`~sionna.rt.RadioMaterialBase` instances and ITU radio materials, specifying material attributes directly inside the XML scene file (such as ``<float name="thickness" value="..."/>`` or ``<rgb name="color" value="..."/>``) overrides any predefined or registered material attributes:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <!-- Thickness and color overrides for an ITU radio material -->
+        <bsdf type="itu-radio-material" id="itu_custom_wood">
+            <string name="type" value="custom_wood"/>
+            <float name="thickness" value="0.25"/>
+            <rgb name="color" value="0.9, 0.1, 0.1"/>
+        </bsdf>
+
+        <!-- Thickness and color overrides for a registered RadioMaterial -->
+        <bsdf type="radio-material" id="my_custom_mat">
+            <float name="thickness" value="0.35"/>
+            <rgb name="color" value="0.8, 0.2, 0.2"/>
+        </bsdf>
+    </scene>

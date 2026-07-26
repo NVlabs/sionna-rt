@@ -25,7 +25,7 @@ import sionna
 from .constants import DEFAULT_FREQUENCY, DEFAULT_BANDWIDTH, \
                        DEFAULT_TEMPERATURE, \
                        DEFAULT_PREVIEW_BACKGROUND_COLOR
-from .radio_materials import RadioMaterialBase
+from .radio_materials import RadioMaterialBase, radio_material_registry
 from .antenna_array import AntennaArray
 from .camera import Camera
 from .preview import Previewer
@@ -934,6 +934,32 @@ class Scene:
                     f"Found shape \"{s.id()}\" without an associated radio"
                     " material while loading the scene."
                 )
+
+            # Check if this BSDF matches a material registered in radio_material_registry
+            mat_id = bsdf.id()
+            reg_name = None
+            if mat_id in radio_material_registry.list():
+                reg_name = mat_id
+            elif mat_id.startswith("mat-") and mat_id[4:] in radio_material_registry.list():
+                reg_name = mat_id[4:]
+
+            if reg_name is not None:
+                registered_rm = radio_material_registry.get(reg_name)
+                mi_bsdf = s.bsdf()
+                if isinstance(mi_bsdf, sionna.rt.RadioMaterialBase):
+                    registered_rm.color = mi_bsdf.color
+                    registered_rm.thickness = mi_bsdf.thickness
+                elif hasattr(mi_bsdf, "properties"):
+                    props = mi_bsdf.properties()
+                    for pname in ("color", "reflectance", "base_color"):
+                        if props.has_property(pname):
+                            registered_rm.color = tuple(props[pname])
+                            break
+                    if props.has_property("thickness"):
+                        registered_rm.thickness = float(props["thickness"])
+                s.set_bsdf(registered_rm)
+                bsdf = s.bsdf()
+                
             if not isinstance(bsdf, sionna.rt.RadioMaterialBase):
                 raise ValueError(
                     f"Found shape \"{s.id()}\" with associated material"

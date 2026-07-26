@@ -17,8 +17,24 @@ from sionna.rt.constants import InteractionType, DEFAULT_THICKNESS,\
 from .radio_material_base import RadioMaterialBase
 from .scattering_pattern import scattering_pattern_registry, \
                                 ScatteringPattern
+from ..registry import Registry
 
 from scipy.constants import speed_of_light
+
+
+# Registry for custom radio materials
+radio_material_registry = Registry()
+
+
+def register_radio_material(rm: RadioMaterialBase) -> None:
+    # pylint: disable=line-too-long
+    r"""
+    Registers a custom radio material instance to be used when loading scene files.
+
+    :param rm: An instance of :class:`~sionna.rt.RadioMaterialBase` (or a subclass)
+    """
+    radio_material_registry.register(rm, rm.name)
+
 
 class RadioMaterial(RadioMaterialBase):
     # pylint: disable=line-too-long

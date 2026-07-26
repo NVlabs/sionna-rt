@@ -17,6 +17,7 @@ import mitsuba as mi
 import sionna
 from .constants import DEFAULT_THICKNESS
 from .radio_materials.itu import ITU_MATERIALS_PROPERTIES
+from .radio_materials.radio_material import radio_material_registry
 from .scene_object import SceneObject
 from .utils.meshes import remove_mesh_duplicate_vertices
 
@@ -112,6 +113,24 @@ def process_xml(xml_string: str,
                 bsdf.attrib["id"] = mat_id
             for k, (t, v) in props.items():
                 bsdf.append(ET.Element(t, {"name": k, "value": str(v)}))
+        elif ((name in radio_material_registry.list())
+              or (mat_id in radio_material_registry.list())):
+            color_prop = None
+            for pname in ("color", "reflectance", "base_color"):
+                color_prop = bsdf.find(f".//rgb[@name='{pname}']")
+                if color_prop is not None:
+                    break
+
+            thickness_prop = bsdf.find("float[@name='thickness']")
+
+            bsdf.clear()
+            bsdf.attrib["type"] = "radio-material"
+            if mat_id is not None:
+                bsdf.attrib["id"] = mat_id
+            if color_prop is not None:
+                bsdf.append(color_prop)
+            if thickness_prop is not None:
+                bsdf.append(thickness_prop)
         elif (bsdf_type != "itu-radio-material") \
              and (name in ITU_MATERIALS_PROPERTIES):
             raise ValueError(

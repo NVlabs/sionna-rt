@@ -14,7 +14,9 @@ import mitsuba as mi
 import drjit as dr
 from sionna import rt
 from sionna.rt import load_scene, load_scene_from_string, SceneObject, \
-                      RadioMaterial, RadioMaterialBase, ITURadioMaterial
+                      RadioMaterial, RadioMaterialBase, ITURadioMaterial, \
+                      register_itu_radio_material, register_radio_material, \
+                      radio_material_registry
 
 
 def register_custom_radio_material():
@@ -523,3 +525,253 @@ def test07_scene_loading_error_messages():
             </shape>
         </scene>
     """)
+
+
+def test08_register_itu_radio_material():
+    # Register the material
+    register_itu_radio_material(
+        "custom_unknown_wood",
+        {(0.1, 100.0): (2.5, 0.0, 0.01, 1.0)},
+        (0.2, 0.4, 0.6)
+    )
+
+    # 1. Loading with diffuse BSDF without 'itu_' or 'mat-' prefix must fail
+    xml_str_no_prefix = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="custom_unknown_wood"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    with pytest.raises(ValueError, match=r".*ITU material names must start with \"itu_\".*"):
+        load_scene_from_string(xml_str_no_prefix)
+
+    # 2. Loading with newer explicit syntax (<bsdf type="itu-radio-material" ...>)
+    xml_str_new_syntax = """
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="itu_custom_unknown_wood">
+            <string name="type" value="custom_unknown_wood"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="itu_custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    scene1 = load_scene_from_string(xml_str_new_syntax)
+    assert "itu_custom_unknown_wood" in scene1.radio_materials
+    assert isinstance(scene1.radio_materials["itu_custom_unknown_wood"], ITURadioMaterial)
+
+    # 3. Loading with newer explicit syntax with id without 'itu_' prefix
+    xml_str_new_syntax2 = """
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="custom_unknown_wood">
+            <string name="type" value="custom_unknown_wood"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    scene2 = load_scene_from_string(xml_str_new_syntax2)
+    assert "custom_unknown_wood" in scene2.radio_materials
+    assert isinstance(scene2.radio_materials["custom_unknown_wood"], ITURadioMaterial)
+
+    # 4. Loading with legacy/Blender syntax (<bsdf type="diffuse" id="itu_custom_unknown_wood"/>)
+    xml_str_legacy = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="itu_custom_unknown_wood"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="itu_custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    scene3 = load_scene_from_string(xml_str_legacy)
+    assert "itu_custom_unknown_wood" in scene3.radio_materials
+    assert isinstance(scene3.radio_materials["itu_custom_unknown_wood"], ITURadioMaterial)
+
+    # 5. Loading with legacy/Blender syntax with 'mat-' prefix (<bsdf type="diffuse" id="mat-itu_custom_unknown_wood"/>)
+    xml_str_legacy_mat = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="mat-itu_custom_unknown_wood"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="mat-itu_custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    scene4 = load_scene_from_string(xml_str_legacy_mat)
+    assert "itu_custom_unknown_wood" in scene4.radio_materials
+    # 6. Loading multiple custom material IDs referencing the same ITU material type with different thicknesses
+    xml_str_multiple_ids = """
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="my_custom_thick_wood">
+            <string name="type" value="custom_unknown_wood"/>
+            <float name="thickness" value="0.25"/>
+        </bsdf>
+        <bsdf type="itu-radio-material" id="my_custom_thin_wood">
+            <string name="type" value="custom_unknown_wood"/>
+            <float name="thickness" value="0.02"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_thick_wood"/>
+        </shape>
+        <shape type="cube" id="shape2">
+            <ref name="bsdf" id="my_custom_thin_wood"/>
+        </shape>
+    </scene>
+    """
+    scene_multiple = load_scene_from_string(xml_str_multiple_ids, merge_shapes=False)
+    assert "my_custom_thick_wood" in scene_multiple.radio_materials
+    assert "my_custom_thin_wood" in scene_multiple.radio_materials
+    mat_thick = scene_multiple.radio_materials["my_custom_thick_wood"]
+    mat_thin = scene_multiple.radio_materials["my_custom_thin_wood"]
+    assert mat_thick.itu_type == "custom_unknown_wood"
+    assert mat_thin.itu_type == "custom_unknown_wood"
+    assert dr.allclose(mat_thick.thickness, 0.25)
+    assert dr.allclose(mat_thin.thickness, 0.02)
+
+    # 7. Loading ITU material with XML color override
+    xml_str_color_override = """
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="itu_custom_unknown_wood">
+            <string name="type" value="custom_unknown_wood"/>
+            <rgb name="color" value="0.9, 0.1, 0.1"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="itu_custom_unknown_wood"/>
+        </shape>
+    </scene>
+    """
+    scene_color = load_scene_from_string(xml_str_color_override)
+    mat_color = scene_color.radio_materials["itu_custom_unknown_wood"]
+    assert dr.allclose(mat_color.color, (0.9, 0.1, 0.1), atol=1e-3)
+
+    # Register material without specifying color (color=None)
+    register_itu_radio_material(
+        "custom_no_color_wood",
+        {(0.1, 100.0): (2.0, 0.0, 0.01, 1.0)}
+    )
+    xml_str_no_color = """
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="itu_custom_no_color_wood">
+            <string name="type" value="custom_no_color_wood"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="itu_custom_no_color_wood"/>
+        </shape>
+    </scene>
+    """
+    scene_no_color = load_scene_from_string(xml_str_no_color)
+    assert "itu_custom_no_color_wood" in scene_no_color.radio_materials
+    mat_no_color = scene_no_color.radio_materials["itu_custom_no_color_wood"]
+    assert mat_no_color.color is not None
+
+
+def test10_register_radio_material():
+    xml_str_unregistered = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm"/>
+        </shape>
+    </scene>
+    """
+
+    # Loading without registration must fail because "my_custom_rm" is not a radio material
+    with pytest.raises(ValueError, match=r".*which is not a radio material.*"):
+        load_scene_from_string(xml_str_unregistered)
+
+    # 1. Loading with new explicit syntax (<bsdf type="radio-material" ...>)
+    custom_mat1 = RadioMaterial(name="my_custom_rm1", relative_permittivity=4.5, conductivity=0.03)
+    register_radio_material(custom_mat1)
+    xml_str_new_syntax = """
+    <scene version="2.1.0">
+        <bsdf type="radio-material" id="my_custom_rm1"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm1"/>
+        </shape>
+    </scene>
+    """
+    scene1 = load_scene_from_string(xml_str_new_syntax, merge_shapes=False)
+    assert "my_custom_rm1" in scene1.radio_materials
+    assert scene1.radio_materials["my_custom_rm1"] is custom_mat1
+    assert scene1.objects["shape1"].radio_material is custom_mat1
+    radio_material_registry.unregister("my_custom_rm1")
+
+    # 2. Loading with legacy/Blender syntax (<bsdf type="diffuse" ...>)
+    custom_mat2 = RadioMaterial(name="my_custom_rm2", relative_permittivity=4.5, conductivity=0.03)
+    register_radio_material(custom_mat2)
+    xml_str_legacy = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm2"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm2"/>
+        </shape>
+    </scene>
+    """
+    scene2 = load_scene_from_string(xml_str_legacy, merge_shapes=False)
+    assert "my_custom_rm2" in scene2.radio_materials
+    assert scene2.radio_materials["my_custom_rm2"] is custom_mat2
+    radio_material_registry.unregister("my_custom_rm2")
+
+    # 3. Loading with 'mat-' prefix syntax (<bsdf type="diffuse" id="mat-my_custom_rm3"/>)
+    custom_mat3 = RadioMaterial(name="my_custom_rm3", relative_permittivity=4.5, conductivity=0.03)
+    register_radio_material(custom_mat3)
+    xml_str_legacy_mat = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="mat-my_custom_rm3"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="mat-my_custom_rm3"/>
+        </shape>
+    </scene>
+    """
+    scene3 = load_scene_from_string(xml_str_legacy_mat, merge_shapes=False)
+    assert "my_custom_rm3" in scene3.radio_materials
+    assert scene3.radio_materials["my_custom_rm3"] is custom_mat3
+    radio_material_registry.unregister("my_custom_rm3")
+
+    # 4. Loading custom RadioMaterial with XML color override
+    custom_mat4 = RadioMaterial(name="my_custom_rm4", relative_permittivity=4.5, conductivity=0.03, color=(0.1, 0.1, 0.1))
+    register_radio_material(custom_mat4)
+    xml_str_color_override = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm4">
+            <rgb name="reflectance" value="0.8, 0.2, 0.2"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm4"/>
+        </shape>
+    </scene>
+    """
+    scene4 = load_scene_from_string(xml_str_color_override, merge_shapes=False)
+    assert dr.allclose(scene4.radio_materials["my_custom_rm4"].color, (0.8, 0.2, 0.2), atol=1e-3)
+    radio_material_registry.unregister("my_custom_rm4")
+
+    # 5. Loading custom RadioMaterial with XML thickness and color overrides
+    custom_mat5 = RadioMaterial(name="my_custom_rm5", relative_permittivity=4.5, conductivity=0.03, thickness=0.1, color=(0.1, 0.1, 0.1))
+    register_radio_material(custom_mat5)
+    xml_str_override = """
+    <scene version="2.1.0">
+        <bsdf type="radio-material" id="my_custom_rm5">
+            <float name="thickness" value="0.35"/>
+            <rgb name="color" value="0.7, 0.3, 0.3"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm5"/>
+        </shape>
+    </scene>
+    """
+    scene5 = load_scene_from_string(xml_str_override, merge_shapes=False)
+    mat5 = scene5.radio_materials["my_custom_rm5"]
+    assert dr.allclose(mat5.thickness, 0.35)
+    assert dr.allclose(mat5.color, (0.7, 0.3, 0.3), atol=1e-3)
+    radio_material_registry.unregister("my_custom_rm5")
+
+
+
+
+
+
+
+
+
