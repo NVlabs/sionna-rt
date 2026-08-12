@@ -9,7 +9,7 @@ They implement all necessary components to simulate the interaction
 between radio waves and objects composed of specific materials.
 
 Modifying Parameters of Radio Materials
-******************************************
+***************************************
 
 To show how to modify the parameters of radio materials, we start by loading
 a scene that consists only of a single reflector.
@@ -96,7 +96,7 @@ We can see how the reflected path gain increases as the conductivity of the refl
 is set to higher values.
 
 Calibrating Material Parameters Through Gradient Descent
-************************************************************
+********************************************************
 
 We consider a simple example in which we aim to retrieve the conductivity of the
 a radio material through gradient descent.
@@ -234,7 +234,7 @@ obtained using the reference scene instantiated at the beginning of this guide.
         :width: 70 %
 
 Custom Radio Materials
-************************
+**********************
 
 Compared to what was done in the previous section, we will now implement a
 scattering model by defining a new class that inherits from the
@@ -247,7 +247,7 @@ Sionna RT. It is highly recommended to first read the
 radio wave propagation.
 
 Representation of Jones vector and Matrices
-=============================================
+===========================================
 
 As detailed in the `Primer on Electromagnetics <../em_primer.html>`_, a wave phasor
 is typically represented by a Jones vector :math:`\mathbf{E} \in \mathbb{C}^2`.
@@ -279,7 +279,7 @@ write equations.
 However, all implementations use the real-valued representation.
 
 Implicit Basis
-===============
+==============
 
 A wave phasor :math:`\mathbf{E}` is expressed by two arbitrary orthogonal
 polarization directions S and P:
@@ -313,7 +313,7 @@ Moreover, it is required that the result of applying this Jones matrix is a
 Jones vector that also describes the scattered wave using the implicit basis.
 
 The Local Interaction Basis
-=============================
+===========================
 
 Computing the Jones matrix and direction of propagation of the scattered wave
 resulting from an interaction is facilitated in Sionna RT by defining a local
@@ -332,13 +332,13 @@ in the local coordinate system, we therefore have
         :width: 100 %
 
 Mandatory Subclass Methods
-============================
+==========================
 
 Implementing a custom radio material requires defining a class that inherits from
 :class:`~sionna.rt.RadioMaterialBase` and implements the following methods:
 
 `sample()`
------------
+----------
 Samples an interaction type and the direction of propagation of the scattered wave
 (which typically depend on the sampled interaction type).
 This function must return, among others, the sample interaction type, direction
@@ -356,7 +356,7 @@ of incident rays interacting with the material resulting in independently sample
 scattered rays that model well the scattered field.
 
 `eval()`
----------
+--------
 Evaluates the Jones matrix for a given interaction type, direction of incidence,
 and direction of scattering. Compared to :meth:`~sionna.rt.RadioMaterialBase.sample`,
 this method does not sample the material.
@@ -367,17 +367,17 @@ Returns the probability that a given interaction type and direction of scatterin
 are sampled conditioned on a given direction of incidence.
 
 `traverse()`
--------------
+------------
 Traverses the attributes and objects of the material. This method is used to
 record the material parameters, and especially the differentiable parameters.
 
 `to_string()`
---------------
+-------------
 Returns a string describing the material. This is used to "print" the material
 in a humanly readable way.
 
 Implementation of a Simple Radio Material Model
-=================================================
+===============================================
 
 For simplicity, we will start by implementing a scattering model that only
 reflects incident radio waves specularly, and such that the energy of the reflected
@@ -807,7 +807,7 @@ As expected, the gradient is positive as increasing the path gain requires
 increasing :math:`g`.
 
 A More Complex Material Model
-===============================
+=============================
 
 Let's now enhance the previous radio material model by incorporating support for
 refraction, which refers to radio waves passing through the material.
@@ -1165,7 +1165,7 @@ Registering Custom Radio Materials Before Loading Scenes
 ********************************************************
 
 When loading scene files (e.g. exported from Blender), shapes may reference custom radio materials or new ITU material names.
-To allow Sionna RT to recognize and assign these materials automatically during scene loading, you can register them prior to calling :func:`~sionna.rt.load_scene`.
+To allow Sionna RT to recognize and assign these materials automatically during scene loading, you can register them prior to calling :func:`~sionna.rt.load_scene`. While it is possible to register a custom radio material by registering a custom BSDF plugin (see above), it is recommended, for simpler use cases, to use the :func:`~sionna.rt.register_radio_material` function to register a :class:`~sionna.rt.RadioMaterialBase` instance or the :func:`~sionna.rt.register_itu_radio_material` function to register a new ITU material.
 
 Registering Custom RadioMaterial Instances
 ==========================================

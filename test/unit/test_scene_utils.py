@@ -20,6 +20,7 @@ from sionna.rt import load_scene, load_scene_from_string, SceneObject, \
 
 
 def register_custom_radio_material():
+    # Register a custom radio material with a custom property `some_param` that is not part of the built-in radio material.
     class MyTestRadioMaterial(RadioMaterial):
         def __init__(self, props: mi.Properties | None = None):
             self.some_param = props.get("some_param", 0.0)
@@ -183,10 +184,6 @@ def test03_scene_add_remove():
 def test04_scene_radio_materials():
     tmp_path = join(tempfile.gettempdir(), "test_scene_04.xml")
 
-    # We need to support several ways to specify radio materials:
-    # - `diffuse` BSDF with a special name (typically from a Blender export)
-    # - `itu-radio-material` or other built-in radio material
-    # - A user-defined custom radio material registered before loading the scene.
     custom_rm_type, MyCustomRadioMaterial = register_custom_radio_material()
 
     scene_content = \
@@ -667,7 +664,7 @@ def test08_register_itu_radio_material():
     assert mat_no_color.color is not None
 
 
-def test10_register_radio_material():
+def test09_register_radio_material():
     xml_str_unregistered = """
     <scene version="2.1.0">
         <bsdf type="diffuse" id="my_custom_rm"/>
