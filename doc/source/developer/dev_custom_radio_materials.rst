@@ -1260,24 +1260,30 @@ Using the explicit XML syntax (``type="itu-radio-material"``), you can define mu
         </shape>
     </scene>
 
-Overriding Material Attributes (Thickness & Color) in Scene Files
------------------------------------------------------------------
+Overriding Material Attributes in Scene Files
+----------------------------------------------
 
-For both custom registered :class:`~sionna.rt.RadioMaterialBase` instances and ITU radio materials, specifying material attributes directly inside the XML scene file (such as ``<float name="thickness" value="..."/>`` or ``<rgb name="color" value="..."/>``) overrides any predefined or registered material attributes:
+When scene files are loaded, attributes defined in XML BSDF nodes (such as ``thickness``, ``color``, ``conductivity``, ``relative_permittivity``, etc.) can override the predefined attributes of both built-in ITU materials and registered custom radio materials:
 
 .. code-block:: xml
 
     <scene version="2.1.0">
-        <!-- Thickness and color overrides for an ITU radio material -->
-        <bsdf type="itu-radio-material" id="itu_custom_wood">
-            <string name="type" value="custom_wood"/>
-            <float name="thickness" value="0.25"/>
-            <rgb name="color" value="0.9, 0.1, 0.1"/>
-        </bsdf>
-
-        <!-- Thickness and color overrides for a registered RadioMaterial -->
+        <!-- Thickness, conductivity, and color overrides for a registered RadioMaterial -->
         <bsdf type="radio-material" id="my_custom_mat">
-            <float name="thickness" value="0.35"/>
+            <float name="thickness" value="0.25"/>
+            <float name="conductivity" value="0.05"/>
             <rgb name="color" value="0.8, 0.2, 0.2"/>
         </bsdf>
+
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_mat"/>
+        </shape>
     </scene>
+
+When overrides are specified:
+* **Blueprint Immutability**: The blueprint instance in :func:`~sionna.rt.register_radio_material` is never mutated. Instead, an independent clone is created specifically for the loaded scene (see :meth:`~sionna.rt.RadioMaterialBase.clone`).
+* **Shallow Cloning & Gradient Sharing**: Material cloning performs shallow cloning: non-overridden properties share the underlying values and arrays/tensors with the origin material. During differentiable ray tracing, gradients from rays interacting with any clone sharing a parameter will accumulate onto that shared parameter. Because each clone is an independent Python object, updating a parameter on one material after an optimizer step updates that instance's attribute reference; to keep other clones synchronized across optimization steps, their attributes must be updated or re-assigned explicitly.
+* **Instance Deduplication & Merging**: Shapes sharing identical material properties share the exact same :class:`~sionna.rt.RadioMaterialBase` instance in memory. This enables Mitsuba's shape merging mechanism (``merge_shapes=True``) to combine them into a single geometry for optimal ray tracing performance.
+* **Naming in the Scene**: If multiple distinct variations of the same material are defined within a scene, each variation is registered under a unique name in ``scene.radio_materials`` (e.g. ``my_custom_mat``, ``my_custom_mat_1``, etc.).
+* **Logging Notifications**: Material registrations and overrides are logged via the ``sionna.rt`` logger at ``INFO`` level, allowing you to easily track created and overridden material instances.

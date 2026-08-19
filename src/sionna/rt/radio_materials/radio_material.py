@@ -278,6 +278,52 @@ class RadioMaterial(RadioMaterialBase):
             raise ValueError("Not an instance of ScatteringPattern")
         self._scattering_pattern = sp
 
+    def clone(self,
+              name: str | None = None,
+              **overrides) -> "RadioMaterial":
+        r"""
+        Returns a new :class:`RadioMaterial`, identical to this one except
+        for any specified ``overrides``
+
+        This method performs a shallow clone: non-overridden properties
+        share their underlying values and arrays/tensors with the origin
+        material. In differentiable ray tracing, this allows backpropagating
+        gradients from interactions on cloned materials to the shared
+        parameters of the origin material. Note that each clone is an
+        independent object: updating a property on one instance via its
+        setter (e.g., applying a gradient descent step) re-binds that
+        attribute on that instance and does not implicitly re-bind attributes
+        on other clones.
+
+        See :meth:`RadioMaterialBase.clone` for details.
+
+        :param name: Optional new name for the cloned material.
+        :param overrides: Keyword arguments specifying properties to override.
+
+        :return: New :class:`RadioMaterial` with the specified overrides.
+        """
+        kwargs = {
+            "name": name or self.name,
+            "thickness": self.thickness,
+            "relative_permittivity": self.relative_permittivity,
+            "conductivity": self.conductivity,
+            "scattering_coefficient": self.scattering_coefficient,
+            "xpd_coefficient": self.xpd_coefficient,
+            "frequency_update_callback": self.frequency_update_callback,
+            "color": self.color,
+        }
+        sp_override = overrides.pop("scattering_pattern", None)
+        kwargs.update(overrides)
+        new = RadioMaterial(**kwargs)
+        if sp_override is not None:
+            if isinstance(sp_override, str):
+                factory = scattering_pattern_registry.get(sp_override)
+                sp_override = factory()
+            new.scattering_pattern = sp_override
+        else:
+            new.scattering_pattern = self.scattering_pattern
+        return new
+
     @property
     def frequency_update_callback(self):
         # pylint: disable=line-too-long

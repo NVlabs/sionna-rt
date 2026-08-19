@@ -4,6 +4,7 @@
 #
 
 import gc
+import logging
 import os
 from os.path import join
 import tempfile
@@ -86,7 +87,7 @@ def test03_scene_add_remove():
     tmp_path = join(tempfile.gettempdir(), "test_scene_03.xml")
 
     with open(tmp_path, "w") as f:
-            f.write("""
+        f.write("""
         <scene version="2.1.0">
 
             <emitter type="constant"/>
@@ -691,8 +692,11 @@ def test09_register_radio_material():
     """
     scene1 = load_scene_from_string(xml_str_new_syntax, merge_shapes=False)
     assert "my_custom_rm1" in scene1.radio_materials
-    assert scene1.radio_materials["my_custom_rm1"] is custom_mat1
-    assert scene1.objects["shape1"].radio_material is custom_mat1
+    mat1 = scene1.radio_materials["my_custom_rm1"]
+    assert dr.allclose(mat1.relative_permittivity, 4.5)
+    assert dr.allclose(mat1.conductivity, 0.03)
+    assert mat1 is not custom_mat1
+    assert scene1.objects["shape1"].radio_material is mat1
     radio_material_registry.unregister("my_custom_rm1")
 
     # 2. Loading with legacy/Blender syntax (<bsdf type="diffuse" ...>)
@@ -708,7 +712,10 @@ def test09_register_radio_material():
     """
     scene2 = load_scene_from_string(xml_str_legacy, merge_shapes=False)
     assert "my_custom_rm2" in scene2.radio_materials
-    assert scene2.radio_materials["my_custom_rm2"] is custom_mat2
+    mat2 = scene2.radio_materials["my_custom_rm2"]
+    assert dr.allclose(mat2.relative_permittivity, 4.5)
+    assert dr.allclose(mat2.conductivity, 0.03)
+    assert mat2 is not custom_mat2
     radio_material_registry.unregister("my_custom_rm2")
 
     # 3. Loading with 'mat-' prefix syntax (<bsdf type="diffuse" id="mat-my_custom_rm3"/>)
@@ -724,10 +731,16 @@ def test09_register_radio_material():
     """
     scene3 = load_scene_from_string(xml_str_legacy_mat, merge_shapes=False)
     assert "my_custom_rm3" in scene3.radio_materials
-    assert scene3.radio_materials["my_custom_rm3"] is custom_mat3
+    mat3 = scene3.radio_materials["my_custom_rm3"]
+    assert dr.allclose(mat3.relative_permittivity, 4.5)
+    assert dr.allclose(mat3.conductivity, 0.03)
+    assert mat3 is not custom_mat3
     radio_material_registry.unregister("my_custom_rm3")
 
-    # 4. Loading custom RadioMaterial with XML color override
+    # 4. Loading custom RadioMaterial with XML color override: the override
+    # must apply to an independent clone of the material, and must NOT
+    # mutate the registered material itself, since it may be shared by
+    # other shapes or scenes.
     custom_mat4 = RadioMaterial(name="my_custom_rm4", relative_permittivity=4.5, conductivity=0.03, color=(0.1, 0.1, 0.1))
     register_radio_material(custom_mat4)
     xml_str_color_override = """
@@ -741,16 +754,22 @@ def test09_register_radio_material():
     </scene>
     """
     scene4 = load_scene_from_string(xml_str_color_override, merge_shapes=False)
-    assert dr.allclose(scene4.radio_materials["my_custom_rm4"].color, (0.8, 0.2, 0.2), atol=1e-3)
+    mat4 = scene4.radio_materials["my_custom_rm4"]
+    assert dr.allclose(mat4.color, (0.8, 0.2, 0.2), atol=1e-3)
+    assert mat4 is not custom_mat4
+    assert dr.allclose(custom_mat4.color, (0.1, 0.1, 0.1), atol=1e-3)
     radio_material_registry.unregister("my_custom_rm4")
 
-    # 5. Loading custom RadioMaterial with XML thickness and color overrides
+    # 5. Overriding `thickness`, `conductivity`, and `color` of a registered
+    # material directly in the scene file: overrides must apply to an independent
+    # clone of the material without mutating the registered material itself.
     custom_mat5 = RadioMaterial(name="my_custom_rm5", relative_permittivity=4.5, conductivity=0.03, thickness=0.1, color=(0.1, 0.1, 0.1))
     register_radio_material(custom_mat5)
-    xml_str_override = """
+    xml_str_property_overrides = """
     <scene version="2.1.0">
         <bsdf type="radio-material" id="my_custom_rm5">
             <float name="thickness" value="0.35"/>
+            <float name="conductivity" value="0.08"/>
             <rgb name="color" value="0.7, 0.3, 0.3"/>
         </bsdf>
         <shape type="cube" id="shape1">
@@ -758,17 +777,250 @@ def test09_register_radio_material():
         </shape>
     </scene>
     """
-    scene5 = load_scene_from_string(xml_str_override, merge_shapes=False)
+    scene5 = load_scene_from_string(xml_str_property_overrides, merge_shapes=False)
     mat5 = scene5.radio_materials["my_custom_rm5"]
     assert dr.allclose(mat5.thickness, 0.35)
+    assert dr.allclose(mat5.conductivity, 0.08)
+    assert dr.allclose(mat5.relative_permittivity, 4.5)
     assert dr.allclose(mat5.color, (0.7, 0.3, 0.3), atol=1e-3)
+    # The registered material must remain untouched
+    assert dr.allclose(custom_mat5.thickness, 0.1)
+    assert dr.allclose(custom_mat5.conductivity, 0.03)
+    assert dr.allclose(custom_mat5.color, (0.1, 0.1, 0.1), atol=1e-3)
     radio_material_registry.unregister("my_custom_rm5")
 
+    # 6. Loading a registered material with no override at all must not
+    # change any of its properties.
+    custom_mat6 = RadioMaterial(name="my_custom_rm6", relative_permittivity=4.5, conductivity=0.03, thickness=0.42, color=(0.3, 0.4, 0.5))
+    register_radio_material(custom_mat6)
+    xml_str_no_override = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm6"/>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm6"/>
+        </shape>
+    </scene>
+    """
+    scene6 = load_scene_from_string(xml_str_no_override, merge_shapes=False)
+    mat6 = scene6.radio_materials["my_custom_rm6"]
+    assert dr.allclose(mat6.thickness, 0.42)
+    assert dr.allclose(mat6.relative_permittivity, 4.5)
+    assert dr.allclose(mat6.conductivity, 0.03)
+    assert dr.allclose(mat6.color, (0.3, 0.4, 0.5), atol=1e-3)
+    assert dr.allclose(custom_mat6.thickness, 0.42)
+    assert dr.allclose(custom_mat6.color, (0.3, 0.4, 0.5), atol=1e-3)
+    radio_material_registry.unregister("my_custom_rm6")
+
+    # 7. Multiple shapes referencing the same BSDF node (through `<ref>`)
+    # that requests overrides must share a single cloned material,
+    # rather than each getting their own, unrelated, clone.
+    custom_mat7 = RadioMaterial(name="my_custom_rm7", relative_permittivity=4.5, conductivity=0.03, color=(0.1, 0.1, 0.1))
+    register_radio_material(custom_mat7)
+    xml_str_shared_override = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm7">
+            <rgb name="reflectance" value="0.2, 0.7, 0.2"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm7"/>
+        </shape>
+        <shape type="cube" id="shape2">
+            <ref name="bsdf" id="my_custom_rm7"/>
+        </shape>
+    </scene>
+    """
+    scene7 = load_scene_from_string(xml_str_shared_override, merge_shapes=False)
+    assert scene7.objects["shape1"].radio_material is scene7.objects["shape2"].radio_material
+    assert dr.allclose(scene7.objects["shape1"].radio_material.color, (0.2, 0.7, 0.2), atol=1e-3)
+    assert dr.allclose(custom_mat7.color, (0.1, 0.1, 0.1), atol=1e-3)
+    radio_material_registry.unregister("my_custom_rm7")
+
+    # 8. Registered `ITURadioMaterial`: overrides must also return an
+    # independent, working, clone.
+    custom_mat8 = ITURadioMaterial(name="my_custom_rm8", itu_type="concrete",
+                                   thickness=0.15, color=(0.1, 0.1, 0.1))
+    register_radio_material(custom_mat8)
+    xml_str_itu_color_override = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm8">
+            <rgb name="reflectance" value="0.4, 0.6, 0.1"/>
+            <float name="thickness" value="0.22"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm8"/>
+        </shape>
+    </scene>
+    """
+    scene8 = load_scene_from_string(xml_str_itu_color_override, merge_shapes=False)
+    mat8 = scene8.radio_materials["my_custom_rm8"]
+    assert isinstance(mat8, ITURadioMaterial)
+    assert mat8.itu_type == "concrete"
+    assert dr.allclose(mat8.thickness, 0.22)
+    assert dr.allclose(mat8.color, (0.4, 0.6, 0.1), atol=1e-3)
+    assert mat8 is not custom_mat8
+    assert dr.allclose(custom_mat8.thickness, 0.15)
+    assert dr.allclose(custom_mat8.color, (0.1, 0.1, 0.1), atol=1e-3)
+    radio_material_registry.unregister("my_custom_rm8")
+
+    # 9. A custom RadioMaterialBase subclass that does not implement
+    # `clone` must raise a clear error when an override is requested.
+    class BareRadioMaterial(RadioMaterialBase):
+        def __init__(self, name):
+            props = mi.Properties("radio-material")
+            props.set_id(name)
+            super().__init__(props)
+
+    custom_mat9 = BareRadioMaterial("my_custom_rm9")
+    register_radio_material(custom_mat9)
+    xml_str_unsupported_override = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm9">
+            <rgb name="reflectance" value="0.4, 0.6, 0.1"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm9"/>
+        </shape>
+    </scene>
+    """
+    with pytest.raises(NotImplementedError, match=r".*does not support cloning.*"):
+        load_scene_from_string(xml_str_unsupported_override, merge_shapes=False)
+    radio_material_registry.unregister("my_custom_rm9")
+
+    # 10. Multiple distinct variations of the same registered material in one scene
+    # must be assigned unique names and registered independently in scene.radio_materials.
+    custom_mat10 = RadioMaterial(name="my_custom_rm10", relative_permittivity=3.0, conductivity=0.01, thickness=0.1)
+    register_radio_material(custom_mat10)
+    xml_str_multi_variations = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm10">
+            <float name="thickness" value="0.1"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm10"/>
+        </shape>
+        <shape type="cube" id="shape2">
+            <bsdf type="diffuse" id="my_custom_rm10">
+                <float name="thickness" value="0.3"/>
+            </bsdf>
+        </shape>
+    </scene>
+    """
+    scene10 = load_scene_from_string(xml_str_multi_variations, merge_shapes=False)
+    assert "my_custom_rm10" in scene10.radio_materials
+    assert "my_custom_rm10_1" in scene10.radio_materials
+    mat10_a = scene10.radio_materials["my_custom_rm10"]
+    mat10_b = scene10.radio_materials["my_custom_rm10_1"]
+    assert dr.allclose(mat10_a.thickness, 0.1)
+    assert dr.allclose(mat10_b.thickness, 0.3)
+    assert scene10.objects["shape1"].radio_material is mat10_a
+    assert scene10.objects["shape2"].radio_material is mat10_b
+    radio_material_registry.unregister("my_custom_rm10")
+
+    # 11. Shape merging with registered custom radio materials
+    custom_mat11 = RadioMaterial(name="my_custom_rm11", relative_permittivity=3.5, conductivity=0.02)
+    register_radio_material(custom_mat11)
+    xml_str_merge = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="my_custom_rm11">
+            <float name="thickness" value="0.2"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="my_custom_rm11"/>
+        </shape>
+        <shape type="cube" id="shape2">
+            <ref name="bsdf" id="my_custom_rm11"/>
+        </shape>
+    </scene>
+    """
+    scene11 = load_scene_from_string(xml_str_merge, merge_shapes=True)
+    # Shapes sharing the same BSDF should be merged into one shape
+    assert len(scene11.objects) == 1
+    assert "my_custom_rm11" in scene11.radio_materials
+    merged_obj = list(scene11.objects.values())[0]
+    assert dr.allclose(merged_obj.radio_material.thickness, 0.2)
+    radio_material_registry.unregister("my_custom_rm11")
 
 
+def test10_register_radio_material_logging(caplog):
+    custom_mat = RadioMaterial(name="logged_mat", relative_permittivity=3.0, conductivity=0.01)
+    register_radio_material(custom_mat)
+    xml_str = """
+    <scene version="2.1.0">
+        <bsdf type="diffuse" id="logged_mat">
+            <float name="thickness" value="0.5"/>
+        </bsdf>
+        <shape type="cube" id="shape1">
+            <ref name="bsdf" id="logged_mat"/>
+        </shape>
+    </scene>
+    """
+    with caplog.at_level(logging.INFO, logger="sionna.rt"):
+        scene = load_scene_from_string(xml_str, merge_shapes=False)
+        assert "logged_mat" in scene.radio_materials
+        assert any("Registered radio material 'logged_mat'" in record.message for record in caplog.records)
+    radio_material_registry.unregister("logged_mat")
 
 
+def test11_clone_scattering_pattern():
+    mat = RadioMaterial(name="test_mat", relative_permittivity=3.0, conductivity=0.01)
+    
+    # 1. Clone with string factory name
+    cloned_str = mat.clone(name="test_mat_str", scattering_pattern="lambertian")
+    assert isinstance(cloned_str.scattering_pattern, rt.ScatteringPattern)
 
+    # 2. Clone with ScatteringPattern instance
+    sp_instance = mat.scattering_pattern
+    cloned_inst = mat.clone(name="test_mat_inst", scattering_pattern=sp_instance)
+    assert cloned_inst.scattering_pattern is sp_instance
+
+    # 3. Clone with invalid scattering pattern raises ValueError via setter
+    with pytest.raises(ValueError, match="Not an instance of ScatteringPattern"):
+        mat.clone(name="test_mat_invalid", scattering_pattern=12345)
+
+    # 4. ITURadioMaterial clone with invalid scattering pattern
+    itu_mat = ITURadioMaterial(name="test_itu", itu_type="concrete", thickness=0.1)
+    with pytest.raises(ValueError, match="Not an instance of ScatteringPattern"):
+        itu_mat.clone(name="test_itu_invalid", scattering_pattern=12345)
+
+
+def test12_clone_shallow_parameter_sharing():
+    # Verify that non-overridden properties share differentiable references
+    # in the computation graph, but updating one instance via setter does not
+    # implicitly mutate other distinct cloned instances.
+    sigma = mi.Float(0.1)
+    dr.enable_grad(sigma)
+    mat = RadioMaterial(
+        name="orig_mat",
+        relative_permittivity=3.5,
+        conductivity=sigma,
+        thickness=0.1
+    )
+    # Create two clones sharing conductivity but overriding thickness
+    cloned1 = mat.clone(name="cloned1", thickness=0.5)
+    cloned2 = mat.clone(name="cloned2", thickness=0.8)
+
+    # 1. Verify gradient backpropagation from cloned1 to mat and cloned2
+    loss = dr.square(cloned1.conductivity - 1.0)
+    dr.backward(loss)
+    # Gradient of (x - 1)^2 at x=0.1 is 2*(0.1 - 1.0) = -1.8
+    assert dr.allclose(dr.grad(mat.conductivity), -1.8, atol=1e-4)
+    assert dr.allclose(dr.grad(cloned1.conductivity), -1.8, atol=1e-4)
+    assert dr.allclose(dr.grad(cloned2.conductivity), -1.8, atol=1e-4)
+
+    # 2. Applying a gradient step on mat re-binds mat.conductivity
+    grad = dr.grad(mat.conductivity)
+    new_val = dr.detach(mat.conductivity - 0.2 * grad)
+    mat.conductivity = new_val
+
+    # mat has the new value (~0.46)
+    assert dr.allclose(mat.conductivity, 0.46, atol=1e-4)
+    # Clones are separate Python objects and retain their original value (0.1)
+    assert dr.allclose(cloned1.conductivity, 0.1, atol=1e-4)
+    assert dr.allclose(cloned2.conductivity, 0.1, atol=1e-4)
+
+    # To update clones for subsequent forward passes, re-bind explicitly:
+    cloned1.conductivity = mat.conductivity
+    assert dr.allclose(cloned1.conductivity, 0.46, atol=1e-4)
 
 
 

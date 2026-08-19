@@ -9,6 +9,7 @@ from typing import Tuple, Callable, Mapping
 
 from .itu import itu_material, ITU_MATERIALS_PROPERTIES
 from .radio_material import RadioMaterial
+from .scattering_pattern import scattering_pattern_registry
 
 
 class ITURadioMaterial(RadioMaterial):
@@ -151,6 +152,50 @@ class ITURadioMaterial(RadioMaterial):
         """
         return self._itu_type
 
+    def clone(self,
+              name: str | None = None,
+              **overrides) -> "ITURadioMaterial":
+        r"""
+        Returns a new :class:`ITURadioMaterial`, identical to this one except
+        for any specified ``overrides``
+
+        This method performs a shallow clone: non-overridden properties
+        share their underlying values and arrays/tensors with the origin
+        material. In differentiable ray tracing, this allows backpropagating
+        gradients from interactions on cloned materials to the shared
+        parameters of the origin material. Note that each clone is an
+        independent object: updating a property on one instance via its
+        setter (e.g., applying a gradient descent step) re-binds that
+        attribute on that instance and does not implicitly re-bind attributes
+        on other clones.
+
+        See :meth:`~sionna.rt.RadioMaterialBase.clone` for details.
+
+        :param name: Optional new name for the cloned material.
+        :param overrides: Keyword arguments specifying properties to override.
+
+        :return: New :class:`ITURadioMaterial` with the specified overrides.
+        """
+        kwargs = {
+            "name": name or self.name,
+            "itu_type": self.itu_type,
+            "thickness": self.thickness,
+            "scattering_coefficient": self.scattering_coefficient,
+            "xpd_coefficient": self.xpd_coefficient,
+            "color": self.color,
+        }
+        sp_override = overrides.pop("scattering_pattern", None)
+        kwargs.update(overrides)
+        new = ITURadioMaterial(**kwargs)
+        if sp_override is not None:
+            if isinstance(sp_override, str):
+                factory = scattering_pattern_registry.get(sp_override)
+                sp_override = factory()
+            new.scattering_pattern = sp_override
+        else:
+            new.scattering_pattern = self.scattering_pattern
+        return new
+
     def to_string(self) -> str:
         r"""
         Returns a string describing the object
@@ -170,8 +215,8 @@ mi.register_bsdf("itu-radio-material",
 
 def register_itu_radio_material(
     name: str,
-    parameters: Mapping[Tuple[float, float], Tuple[float, float, float, float]],
-    color: Tuple[float, float, float] | None = None
+    parameters: Mapping[tuple[float, float], tuple[float, float, float, float]],
+    color: tuple[float, float, float] | None = None
 ) -> None:
     # pylint: disable=line-too-long
     r"""

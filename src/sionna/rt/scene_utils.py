@@ -22,10 +22,27 @@ from .scene_object import SceneObject
 from .utils.meshes import remove_mesh_duplicate_vertices
 
 
-def process_xml(xml_string: str,
-                merge_shapes: bool = True,
-                merge_shapes_exclude_regex: str | None = None,
-                default_thickness: float = DEFAULT_THICKNESS) -> str:
+def _parse_rgb_value(value: str) -> tuple[float, float, float]:
+    """
+    Parses the ``value`` attribute of an ``<rgb>`` XML node
+
+    :param value: Comma-separated RGB components, or a single value to be
+        used for all three components.
+
+    :return: Tuple of three RGB components.
+    """
+    components = tuple(float(v) for v in value.split(","))
+    if len(components) == 1:
+        components = components * 3
+    return components
+
+
+def process_xml(
+    xml_string: str,
+    merge_shapes: bool = True,
+    merge_shapes_exclude_regex: str | None = None,
+    default_thickness: float = DEFAULT_THICKNESS
+) -> tuple[str, dict]:
     """
     Preprocess the XML string describing the scene
 
@@ -41,6 +58,15 @@ def process_xml(xml_string: str,
         merging. Only used if ``merge_shapes`` is set to `True`.
 
     :param default_thickness: Default thickness [m] of radio materials
+
+    :return: The processed XML string, and a dictionary mapping the ID of
+        BSDFs that reference a material registered in
+        ``radio_material_registry`` to the set of properties (``color``
+        and/or ``thickness``) that are explicitly overridden by that BSDF
+        node in the scene file. A key is only present in this dictionary if
+        the corresponding property was explicitly set in ``xml_string``, so
+        that its absence unambiguously means "no override was requested",
+        as opposed to "the requested value happens to match the default".
     """
 
     # Compile the regex if not 'None'
@@ -51,6 +77,13 @@ def process_xml(xml_string: str,
 
     root = ET.fromstring(xml_string)
 
+    # Overrides of registered radio materials that are explicitly requested
+    # in the scene file, keyed by the BSDF ID that requests them.
+    # Only `color` is a supported override (see `_load_scene_objects`), but
+    # we also track `thickness` overrides here so that a clear error can be
+    # raised instead of silently ignoring/misapplying them.
+    radio_material_overrides = {}
+
     # 1. Replace BSDFs with radio BSDFs
     # If a BSDF node in the XML scene has a special name starting with
     # `mat-itu_` or `itu_`, we automatically convert that BSDF to an
@@ -60,6 +93,7 @@ def process_xml(xml_string: str,
     #
     # We don't need to process BSDFs nested in other BSDFs, e.g. a `diffuse`
     # inside of a `twosided`. We just process the outermost BSDF element.
+    seen_bsdf_ids = set()
     for bsdf in root.findall("./bsdf") + root.findall(".//shape/bsdf"):
         bsdf_type = bsdf.attrib.get("type")
         mat_id = bsdf.attrib.get("id")
@@ -73,6 +107,16 @@ def process_xml(xml_string: str,
                 " or 'id' attribute:\n"
                 + bsdf_string
             )
+
+        if mat_id in seen_bsdf_ids:
+            i = 1
+            unique_mat_id = f"{mat_id}_{i}"
+            while unique_mat_id in seen_bsdf_ids:
+                i += 1
+                unique_mat_id = f"{mat_id}_{i}"
+            mat_id = unique_mat_id
+        seen_bsdf_ids.add(mat_id)
+
         if name.startswith("mat-"):
             name = name[4:]
         if name.startswith("itu_") or name.startswith("itu-"):
@@ -104,9 +148,6 @@ def process_xml(xml_string: str,
             props["type"] = ("string", itu_type)
             props["thickness"] = ("float", thickness)
 
-            # TODO: we could consider saving some information about the original
-            # "visual" BSDFs if that allows users to customize the look of their
-            # scenes easily from Blender.
             bsdf.clear()
             bsdf.attrib["type"] = bsdf_type
             if mat_id is not None:
@@ -123,14 +164,53 @@ def process_xml(xml_string: str,
 
             thickness_prop = bsdf.find("float[@name='thickness']")
 
+            perm_prop = bsdf.find("float[@name='relative_permittivity']")
+            if perm_prop is None:
+                perm_prop = bsdf.find("float[@name='eta_r']")
+
+            cond_prop = bsdf.find("float[@name='conductivity']")
+            if cond_prop is None:
+                cond_prop = bsdf.find("float[@name='sigma']")
+
+            scat_prop = bsdf.find("float[@name='scattering_coefficient']")
+            if scat_prop is None:
+                scat_prop = bsdf.find("float[@name='s']")
+
+            xpd_prop = bsdf.find("float[@name='xpd_coefficient']")
+            if xpd_prop is None:
+                xpd_prop = bsdf.find("float[@name='kx']")
+
+            overrides = {}
+            if color_prop is not None:
+                overrides["color"] = _parse_rgb_value(color_prop.get("value"))
+            if thickness_prop is not None:
+                overrides["thickness"] = float(thickness_prop.get("value"))
+            if perm_prop is not None:
+                overrides["relative_permittivity"] = float(
+                    perm_prop.get("value")
+                )
+            if cond_prop is not None:
+                overrides["conductivity"] = float(cond_prop.get("value"))
+            if scat_prop is not None:
+                overrides["scattering_coefficient"] = float(
+                    scat_prop.get("value")
+                )
+            if xpd_prop is not None:
+                overrides["xpd_coefficient"] = float(xpd_prop.get("value"))
+
+            if overrides:
+                radio_material_overrides[mat_id] = overrides
+
             bsdf.clear()
             bsdf.attrib["type"] = "radio-material"
             if mat_id is not None:
                 bsdf.attrib["id"] = mat_id
-            if color_prop is not None:
-                bsdf.append(color_prop)
-            if thickness_prop is not None:
-                bsdf.append(thickness_prop)
+            for prop in (
+                color_prop, thickness_prop, perm_prop,
+                cond_prop, scat_prop, xpd_prop
+            ):
+                if prop is not None:
+                    bsdf.append(prop)
         elif (bsdf_type != "itu-radio-material") \
              and (name in ITU_MATERIALS_PROPERTIES):
             raise ValueError(
@@ -156,7 +236,7 @@ def process_xml(xml_string: str,
         root.append(merge_node)
 
     ET.indent(root, space="    ")
-    return ET.tostring(root).decode("utf-8")
+    return ET.tostring(root).decode("utf-8"), radio_material_overrides
 
 def edit_scene_shapes(
     scene: sionna.rt.Scene,
