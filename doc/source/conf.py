@@ -37,6 +37,7 @@ extensions = ["sphinx_rtd_theme",
               "sphinx_copybutton",
               "nbsphinx",
               "_ext.list_registry",
+              "_ext.itu_materials_table",
              ]
 autodoc_typehints = "description"
 typehints_fully_qualified = True

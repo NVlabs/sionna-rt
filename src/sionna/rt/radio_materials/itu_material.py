@@ -15,11 +15,11 @@ from .scattering_pattern import scattering_pattern_registry
 class ITURadioMaterial(RadioMaterial):
     # pylint: disable=line-too-long
     r"""
-    Class implementing the materials defined in the ITU-R P.2040-3 recommendation :cite:p:`ITURP20403`
+    Class implementing the materials defined in the ITU-R P.2040-4 recommendation :cite:p:`ITURP20404`
 
     This class inherits from :class:`~sionna.rt.RadioMaterial`.
 
-    The models from the ITU-R P.2040-3 recommendation are based on curve fitting
+    The models from the ITU-R P.2040-4 recommendation are based on curve fitting
     to measurement results and assume non-ionized and non-magnetic materials (:math:`\mu_r = 1`).
     Frequency dependence is modeled by
 
@@ -64,6 +64,10 @@ class ITURadioMaterial(RadioMaterial):
         "chipboard": (0.509, 0.159, 0.323),
         "plasterboard": (0.051, 0.539, 0.133),
         "plywood": (0.136, 0.076, 0.539),
+        "clear_acrylic": (0.8, 0.9, 0.95),
+        "vinyl_tile": (0.75, 0.75, 0.72),
+        "carpet_tile": (0.32, 0.35, 0.42),
+        "asphalt_concrete": (0.18, 0.18, 0.18),
         "very_dry_ground": (0.539, 0.319, 0.223),
         "medium_dry_ground": (0.539, 0.181, 0.076),
         "wet_ground": (0.539, 0.027, 0.147)
