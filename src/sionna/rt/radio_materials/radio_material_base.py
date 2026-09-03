@@ -99,6 +99,36 @@ class RadioMaterialBase(mi.BSDF):
                 raise ValueError("Color components must be in the range (0,1)")
         self._color = (new_color[0], new_color[1], new_color[2])
 
+    # pylint: disable=unused-argument
+    def clone(self,
+              name: str | None = None,
+              **overrides) -> "RadioMaterialBase":
+        r"""
+        Returns a new radio material, identical to this one except for any
+        specified ``overrides``
+
+        This method performs a shallow clone: non-overridden properties
+        share their underlying values and arrays/tensors with the origin
+        material. In differentiable ray tracing, this allows backpropagating
+        gradients from interactions on cloned materials to the shared
+        parameters of the origin material. Note that each clone is an
+        independent object: updating a property on one instance via its
+        setter (e.g., applying a gradient descent step) re-binds that
+        attribute on that instance and does not implicitly re-bind attributes
+        on other clones.
+
+        Subclasses that support this operation must override this method.
+        The default implementation is a no-op, consistently with the other
+        methods of this interface (:meth:`sample`, :meth:`eval`, etc.):
+        callers that rely on a working override are responsible for
+        checking the returned value and raising an appropriate error if a
+        subclass does not implement this method.
+
+        :param name: Optional new name for the cloned material.
+        :param overrides: Keyword arguments specifying properties to override.
+        """
+        return ...
+
     @property
     def is_used(self) -> bool:
         r"""

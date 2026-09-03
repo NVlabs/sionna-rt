@@ -5,10 +5,11 @@
 """ITU radio materials"""
 
 import mitsuba as mi
-from typing import Tuple, Callable
+from typing import Tuple, Callable, Mapping
 
 from .itu import itu_material, ITU_MATERIALS_PROPERTIES
 from .radio_material import RadioMaterial
+from .scattering_pattern import scattering_pattern_registry
 
 
 class ITURadioMaterial(RadioMaterial):
@@ -113,14 +114,19 @@ class ITURadioMaterial(RadioMaterial):
         # 2. `color`, `reflectance` or `base_color` property specified in the
         #    props (scene dictionary or XML file).
         # 3. Default color from `ITU_MATERIAL_COLORS`.
+        # 4. Set color to :py:class:`None`, which results in a random color being used.
         if color is None:
-            color = ITURadioMaterial.ITU_MATERIAL_COLORS[itu_type]
             if has_props:
                 for pname in ("color", "reflectance", "base_color"):
                     if pname in props:
                         color = tuple(props[pname])
                         del props[pname]
-                props["color"] = mi.ScalarColor3f(color)
+                        break
+            if color is None:
+                color = ITURadioMaterial.ITU_MATERIAL_COLORS.get(itu_type, None)  # Color is allowed to be left unspecified (e.g., for custom user-defined ITU materials)
+
+        if color is not None and has_props:
+            props["color"] = mi.ScalarColor3f(color)
 
         # Frequency update callback
         def cb(f: float):
@@ -150,6 +156,50 @@ class ITURadioMaterial(RadioMaterial):
         """
         return self._itu_type
 
+    def clone(self,
+              name: str | None = None,
+              **overrides) -> "ITURadioMaterial":
+        r"""
+        Returns a new :class:`ITURadioMaterial`, identical to this one except
+        for any specified ``overrides``
+
+        This method performs a shallow clone: non-overridden properties
+        share their underlying values and arrays/tensors with the origin
+        material. In differentiable ray tracing, this allows backpropagating
+        gradients from interactions on cloned materials to the shared
+        parameters of the origin material. Note that each clone is an
+        independent object: updating a property on one instance via its
+        setter (e.g., applying a gradient descent step) re-binds that
+        attribute on that instance and does not implicitly re-bind attributes
+        on other clones.
+
+        See :meth:`~sionna.rt.RadioMaterialBase.clone` for details.
+
+        :param name: Optional new name for the cloned material.
+        :param overrides: Keyword arguments specifying properties to override.
+
+        :return: New :class:`ITURadioMaterial` with the specified overrides.
+        """
+        kwargs = {
+            "name": name or self.name,
+            "itu_type": self.itu_type,
+            "thickness": self.thickness,
+            "scattering_coefficient": self.scattering_coefficient,
+            "xpd_coefficient": self.xpd_coefficient,
+            "color": self.color,
+        }
+        sp_override = overrides.pop("scattering_pattern", None)
+        kwargs.update(overrides)
+        new = ITURadioMaterial(**kwargs)
+        if sp_override is not None:
+            if isinstance(sp_override, str):
+                factory = scattering_pattern_registry.get(sp_override)
+                sp_override = factory()
+            new.scattering_pattern = sp_override
+        else:
+            new.scattering_pattern = self.scattering_pattern
+        return new
+
     def to_string(self) -> str:
         r"""
         Returns a string describing the object
@@ -165,3 +215,21 @@ class ITURadioMaterial(RadioMaterial):
 
 mi.register_bsdf("itu-radio-material",
                  lambda props: ITURadioMaterial(props=props))
+
+
+def register_itu_radio_material(
+    name: str,
+    parameters: Mapping[tuple[float, float], tuple[float, float, float, float]],
+    color: tuple[float, float, float] | None = None
+) -> None:
+    # pylint: disable=line-too-long
+    r"""
+    Registers a custom ITU radio material or updates an existing ITU material definition.
+
+    :param name: Name of the ITU radio material to register.
+    :param parameters: A mapping of frequency ranges in GHz ``(f_min, f_max)`` to tuples of ITU parameters ``(a, b, c, d)`` as defined in recommendation ITU-R P.2040.
+    :param color: Optional RGB (red, green, blue) color tuple for rendering/previewing, where each component is in :math:`[0, 1]`. If set to :py:class:`None`, then a random color is used.
+    """
+    ITU_MATERIALS_PROPERTIES[name] = dict(parameters)
+    if color is not None:
+        ITURadioMaterial.ITU_MATERIAL_COLORS[name] = color

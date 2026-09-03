@@ -10,6 +10,7 @@ Scene class, utilities, and example scenes
 from __future__ import annotations
 
 import os
+import logging
 from importlib_resources import files
 from typing import List
 import contextlib
@@ -25,7 +26,7 @@ import sionna
 from .constants import DEFAULT_FREQUENCY, DEFAULT_BANDWIDTH, \
                        DEFAULT_TEMPERATURE, \
                        DEFAULT_PREVIEW_BACKGROUND_COLOR
-from .radio_materials import RadioMaterialBase
+from .radio_materials import RadioMaterialBase, radio_material_registry
 from .antenna_array import AntennaArray
 from .camera import Camera
 from .preview import Previewer
@@ -34,6 +35,9 @@ from .renderer import render
 from .scene_utils import edit_scene_shapes, process_xml
 from .utils import radio_map_color_mapping
 from . import scenes
+
+
+logger = logging.getLogger("sionna.rt")
 
 
 class Scene:
@@ -62,10 +66,16 @@ class Scene:
         :align: center
 
     :param mi_scene: A Mitsuba scene
+
+    :param radio_material_overrides: Per-shape overrides of registered
+        radio material properties, as returned by
+        :func:`~sionna.rt.scene_utils.process_xml`. Only used internally
+        when loading a scene from an XML file.
     """
 
     def __init__(self, mi_scene: mi.Scene | None = None,
-                 remove_duplicate_vertices: bool = False):
+                 remove_duplicate_vertices: bool = False,
+                 radio_material_overrides: dict | None = None):
 
         # Transmitter antenna array
         self._tx_array = None
@@ -107,7 +117,8 @@ class Scene:
         # instantiated when loading the Mitsuba scene.
         # Note that when the radio material is instantiated, it is added
         # to the this scene.
-        self._load_scene_objects(remove_duplicate_vertices)
+        self._load_scene_objects(remove_duplicate_vertices,
+                                 radio_material_overrides or {})
 
     @property
     def frequency(self):
@@ -912,13 +923,26 @@ class Scene:
         yield
         self._scene = old_scene
 
-    def _load_scene_objects(self, remove_duplicate_vertices: bool):
+    def _load_scene_objects(self, remove_duplicate_vertices: bool,
+                            radio_material_overrides: dict):
         """
         Builds Sionna SceneObject instances from the Mistuba scene
+
+        :param remove_duplicate_vertices: If set to `True`, duplicate
+            vertices are removed from the scene objects.
+
+        :param radio_material_overrides: Per-shape overrides of registered
+            radio material properties, as returned by
+            :func:`~sionna.rt.scene_utils.process_xml`.
         """
 
         # List of shapes
         shapes = self._scene.shapes()
+
+        # Cache of instantiated/cloned materials keyed by (reg_name, canonical_overrides_key)
+        # to ensure shapes sharing identical properties share the exact same
+        # RadioMaterialBase instance.
+        cloned_materials = {}
 
         # Parse all shapes in the scene
         for s in shapes:
@@ -934,6 +958,53 @@ class Scene:
                     f"Found shape \"{s.id()}\" without an associated radio"
                     " material while loading the scene."
                 )
+
+            # Check if this BSDF matches a material registered in radio_material_registry
+            mat_id = bsdf.id()
+            reg_name = None
+            if mat_id in radio_material_registry.list():
+                reg_name = mat_id
+            elif mat_id.startswith("mat-") and mat_id[4:] in radio_material_registry.list():
+                reg_name = mat_id[4:]
+
+            if reg_name is not None:
+                registered_rm = radio_material_registry.get(reg_name)
+                overrides = radio_material_overrides.get(mat_id, {})
+                overrides_key = (reg_name, tuple(sorted(overrides.items())))
+
+                if overrides_key not in cloned_materials:
+                    base_mat_name = reg_name
+                    target_name = self._get_unique_material_name(base_mat_name)
+                    cloned = registered_rm.clone(name=target_name, **overrides)
+                    if not isinstance(cloned, sionna.rt.RadioMaterialBase):
+                        raise NotImplementedError(
+                            f"Radio material \"{reg_name}\" (an"
+                            f" instance of"
+                            f" {type(registered_rm).__name__}) does not"
+                            " support cloning. Implement `clone` on"
+                            f" {type(registered_rm).__name__} to"
+                            " support this."
+                        )
+                    cloned_materials[overrides_key] = cloned
+                    if overrides:
+                        logger.info(
+                            "Registered radio material '%s' (derived from '%s' with overrides: %s)",
+                            cloned.name, reg_name, overrides
+                        )
+                    else:
+                        logger.info(
+                            "Registered radio material '%s' (derived from '%s')",
+                            cloned.name, reg_name
+                        )
+                else:
+                    logger.debug(
+                        "Reusing existing radio material '%s' for shape '%s'",
+                        cloned_materials[overrides_key].name, s.id()
+                    )
+
+                bsdf = cloned_materials[overrides_key]
+                s.set_bsdf(bsdf)
+
             if not isinstance(bsdf, sionna.rt.RadioMaterialBase):
                 raise ValueError(
                     f"Found shape \"{s.id()}\" with associated material"
@@ -944,12 +1015,37 @@ class Scene:
                     " `<bsdf type=\"radio-material\" ...>`)."
                 )
 
+            # In case bsdf is an ITURadioMaterial or Mitsuba plugin instance whose name
+            # is already taken by a different material in the scene, rename it.
+            if self._is_name_used(bsdf.name) and self.get(bsdf.name) is not bsdf:
+                new_name = self._get_unique_material_name(bsdf.name)
+                logger.info(
+                    "Registered radio material '%s' (renamed from '%s' to avoid duplicate material name)",
+                    new_name, bsdf.name
+                )
+                # pylint: disable=protected-access
+                bsdf._name = new_name
+
             # Instantiate the scene object
             scene_object = sionna.rt.SceneObject(mi_mesh=s,
                                                  remove_duplicate_vertices=remove_duplicate_vertices)
 
             # Add a scene object to the scene
             self._add_scene_object(scene_object)
+
+    def _get_unique_material_name(self, base_name: str) -> str:
+        """
+        Returns a unique material name in the scene based on ``base_name``
+
+        :param base_name: Base name of the material.
+        :return: Unique material name.
+        """
+        if not self._is_name_used(base_name):
+            return base_name
+        i = 1
+        while self._is_name_used(f"{base_name}_{i}"):
+            i += 1
+        return f"{base_name}_{i}"
 
     def _add_scene_object(self, scene_object: sionna.rt.SceneObject) -> None:
         r"""
@@ -1140,12 +1236,14 @@ def load_scene_from_string(
     :param remove_duplicate_vertices: If set to `True`, duplicate vertices are
         removed from the scene objects.
     """
-    processed = process_xml(xml_string, merge_shapes=merge_shapes,
-                        merge_shapes_exclude_regex=merge_shapes_exclude_regex)
+    processed, radio_material_overrides = process_xml(
+        xml_string, merge_shapes=merge_shapes,
+        merge_shapes_exclude_regex=merge_shapes_exclude_regex)
     mi_scene = mi.load_string(processed, optimize=False)
 
     return Scene(mi_scene=mi_scene,
-                 remove_duplicate_vertices=remove_duplicate_vertices)
+                 remove_duplicate_vertices=remove_duplicate_vertices,
+                 radio_material_overrides=radio_material_overrides)
 
 
 #
