@@ -28,6 +28,9 @@ data type ``drjit.llvm.ad.Float``. This can be seen from the code snippet below:
 
     <class 'drjit.llvm.ad.Float'>
 
+Note that in standard usage of Sionna RT, the Mitsuba variant is set automatically based on the available hardware.
+There is generally no need to manually call ``mi.set_variant()``.
+
 Dr.Jit arrays can exchange data with other array programming frameworks such as
 `Numpy <https://numpy.org>`_,
 `Jax <https://jax.readthedocs.io/en/latest/index.html>`_,

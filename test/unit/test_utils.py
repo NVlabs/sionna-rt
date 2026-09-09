@@ -16,7 +16,9 @@ from scipy.spatial.transform import Rotation as scipy_rotation
 from sionna.rt.utils import complex_sqrt, fresnel_reflection_coefficients_simplified,\
     complex_relative_permittivity, itu_coefficients_single_layer_slab,\
     rotation_matrix, cpx_abs, cpx_add, cpx_div, cpx_exp, cpx_mul, cpx_sqrt, cpx_sub,\
-    cpx_convert, sinc, safe_atan2, transform_mesh, load_mesh, sinc, fresnel, f_utd
+    cpx_convert, sinc, safe_atan2, transform_mesh, load_mesh, fresnel, f_utd,\
+    cot_times_f_utd, sample_keller_cone_with_measure,\
+    remove_mesh_duplicate_vertices
 
 #############################################################
 # Constants
@@ -24,6 +26,25 @@ from sionna.rt.utils import complex_sqrt, fresnel_reflection_coefficients_simpli
 
 # Threshold for the relative squared error above which a test fails
 MAX_RSE = 1e-5
+
+
+@pytest.mark.parametrize("phi_fraction", [0.0, 0.25, 0.5, 0.9])
+def test_keller_cone_shadow_angular_measure(phi_fraction):
+    """The returned angular measure matches the sampled cone interval."""
+
+    e_hat = mi.Vector3f(0.0, 0.0, 1.0)
+    n0 = mi.Vector3f(0.0, 1.0, 0.0)
+    nn = n0
+    phi_i = phi_fraction * dr.pi
+    ki = mi.Vector3f(dr.cos(phi_i), dr.sin(phi_i), 0.0)
+
+    _, full_measure = sample_keller_cone_with_measure(
+        e_hat, n0, nn, mi.Float(0.5), ki, True)
+    _, shadow_measure = sample_keller_cone_with_measure(
+        e_hat, n0, nn, mi.Float(0.5), ki, False)
+
+    assert dr.allclose(full_measure, dr.pi)
+    assert dr.allclose(shadow_measure, dr.pi - phi_i)
 
 #############################################################
 # Utilities
@@ -269,6 +290,49 @@ def test_f_utd():
     y_dr = f_utd(mi.Float(x)).numpy()
     max_abs_err = np.max(np.abs(y_scipy-y_dr))
     assert max_abs_err < MAX_RSE
+
+
+def test_cot_times_f_utd_boundary_limit():
+    """At a UTD pole the cot·F product matches the analytic finite limit."""
+
+    n = 1.5
+    kl = 40.0
+    # Exact pole: ψ = 0, a = 0 → x = 0
+    y = cot_times_f_utd(mi.Float(0.0), mi.Float(0.0), mi.Float(n), mi.Float(kl))
+    expected = n * np.sqrt(2 * np.pi * kl) * np.exp(1j * np.pi / 4)
+    got = cpx_convert(y, "numpy")[0]
+    assert np.isfinite(got)
+    assert np.isclose(got, expected, rtol=1e-5)
+
+
+@pytest.mark.parametrize("delta", [1e-3, 1e-4, 1e-5, 1e-6])
+def test_cot_times_f_utd_near_boundary_continuity(delta):
+    """Approaching a matched pole recovers the analytic boundary limit."""
+
+    n = 1.5
+    kl = 40.0
+    # Matched UTD geometry near ψ = 0: a = 2 sin²(nψ)
+    psi = delta
+    a = 2.0 * np.sin(n * psi) ** 2
+    x = kl * a
+    y = cot_times_f_utd(mi.Float(psi), mi.Float(x), mi.Float(n), mi.Float(kl))
+    expected = n * np.sqrt(2 * np.pi * kl) * np.exp(1j * np.pi / 4)
+    got = cpx_convert(y, "numpy")[0]
+    # Relative error must shrink as the pole is approached.
+    assert np.isclose(got, expected, rtol=max(50 * delta, 1e-3))
+
+
+def test_cot_times_f_utd_matches_naive_product_away_from_pole():
+    """Far from poles the helper matches cot(ψ)·F(x)."""
+
+    n = 1.5
+    kl = 10.0
+    psi = 0.4
+    a = 2.0 * np.sin(n * psi) ** 2
+    x = kl * a
+    y = cot_times_f_utd(mi.Float(psi), mi.Float(x), mi.Float(n), mi.Float(kl))
+    naive = (1.0 / np.tan(psi)) * cpx_convert(f_utd(mi.Float(x)), "numpy")[0]
+    assert np.isclose(cpx_convert(y, "numpy")[0], naive, rtol=1e-4)
 
 def test_fresnel_reflection_coefficients_simplified():
     """
@@ -617,7 +681,7 @@ def test_cpx_sub():
     max_rse = np.max(max_rse)
     assert max_rse < MAX_RSE
 
-@pytest.mark.parametrize('out_type', ["numpy", "jax", "tf", "torch", "raise_error"])
+@pytest.mark.parametrize('out_type', ["numpy", "jax", "torch", "raise_error"])
 def test_cpx_convert(out_type):
     """
     Test the cpx_convert() utility by checking for correct output types
@@ -630,9 +694,6 @@ def test_cpx_convert(out_type):
                              out_type=out_type)
         if out_type == "numpy":
             assert a_conv.dtype == np.complex64
-        elif out_type == "tf":
-            import tensorflow as tf
-            assert a_conv.dtype == tf.complex64
         elif out_type == "torch":
             import torch
             assert a_conv.dtype == torch.complex64
@@ -654,8 +715,13 @@ def test_sinc():
     x_low = np.linspace(-10*dr.pi, 0, 1000)
     x_up = np.linspace(0, 10*dr.pi, 1000)
     x = np.concatenate([x_low, x_up], axis=0)
-    y = sinc(mi.Float64(x))
-    y_np = np.sinc(x)
+    if dr.backend_v(mi.Float) == dr.JitBackend.Metal:
+        # The Metal backend does not support Float64.
+        y = sinc(mi.Float32(x))
+        y_np = np.sinc(x.astype(np.float32))
+    else:
+        y = sinc(mi.Float64(x))
+        y_np = np.sinc(x)
     assert np.max(np.abs(y-y_np)/np.abs(y_np)) < 1e-6
 
 def test_sinc_gradient():
@@ -760,3 +826,72 @@ def test_transform_mesh():
 
     max_rel_ser = np.max(np.abs(vertices_transformed - ref_vertices))
     assert np.isclose(max_rel_ser, 0, atol=1e-6)
+
+
+def test_transform_mesh_recomputes_vertex_normals():
+    """Updating positions via transform_mesh refreshes vertex normals."""
+
+    mesh = mi.Mesh("normals-mesh", 3, 1, has_vertex_normals=True)
+    params = mi.traverse(mesh)
+    params["vertex_positions"] = [0.0, 0.0, 0.0,
+                                  1.0, 0.0, 0.0,
+                                  0.0, 1.0, 0.0]
+    params["faces"] = [0, 1, 2]
+    params.update()
+
+    # Plant stale normals without touching positions (avoids recompute)
+    params = mi.traverse(mesh)
+    params["vertex_normals"] = [1.0, 0.0, 0.0,
+                                1.0, 0.0, 0.0,
+                                1.0, 0.0, 0.0]
+    params.update()
+    stale = dr.unravel(mi.Normal3f,
+                       mi.traverse(mesh)["vertex_normals"]).numpy()
+    assert np.allclose(stale[0], 1.0)
+
+    # Rotate 90 deg about x so the face normal (0,0,1) becomes (0,-1,0)
+    rot = np.array([0.0, 0.0, 0.5 * np.pi])
+    transform_mesh(mesh, translation=[0.0, 0.0, 0.0], rotation=rot, scale=[1, 1, 1])
+
+    normals = dr.unravel(mi.Normal3f,
+                         mi.traverse(mesh)["vertex_normals"]).numpy()
+    n_ref = np.array([0.0, -1.0, 0.0])
+    assert np.allclose(normals, np.tile(n_ref[:, None], (1, 3)), atol=1e-5)
+
+
+def test_remove_mesh_duplicate_vertices_position_only():
+    """Pure position duplicates are welded; UV/normal seams are not kept."""
+
+    mesh = mi.Mesh("dup-pos-mesh", 6, 2,
+                   has_vertex_normals=True,
+                   has_vertex_texcoords=True)
+    params = mi.traverse(mesh)
+    params["vertex_positions"] = [
+        0.0, 0.0, 0.0,  # 0
+        1.0, 0.0, 0.0,  # 1
+        1.0, 1.0, 0.0,  # 2
+        0.0, 0.0, 0.0,  # 3  duplicate of 0
+        1.0, 0.0, 0.0,  # 4  duplicate of 1 (different UV/normal)
+        1.0, 1.0, 0.0,  # 5  duplicate of 2 (different UV/normal)
+    ]
+    params["faces"] = [0, 1, 2, 3, 4, 5]
+    params["vertex_texcoords"] = [
+        0.0, 0.0,
+        1.0, 0.0,
+        1.0, 1.0,
+        0.0, 0.0,
+        0.0, 0.0,
+        0.0, 1.0,
+    ]
+    params["vertex_normals"] = [
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,
+        0.0, 0.0, 1.0,
+        1.0, 0.0, 0.0,
+        1.0, 0.0, 0.0,
+    ]
+    params.update()
+
+    remove_mesh_duplicate_vertices(mesh)
+    assert mesh.vertex_count() == 3

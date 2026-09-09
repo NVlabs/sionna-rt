@@ -7,3 +7,5 @@
 
 from .paths import Paths
 from .path_solver import PathSolver
+from .sb_candidate_generator import SBCandidateGenerator
+from .sb_deterministic import SBDeterministicCandidateGenerator

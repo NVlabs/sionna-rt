@@ -38,11 +38,11 @@ its name. An example is shown below:
         """
         def __init__(self, n: int):
             self.n = n # Exponent
-            self.normalization = dr.sqrt((n+1)/(2*dr.pi)) # Normalization constant
+            self.normalization = (n+1)/(2*dr.pi) # Normalization constant
 
         def __call__(self, k_i_local, k_o_local):
             pattern = dr.sum(mi.Vector3f([0,0,1])*k_o_local, axis=0)**self.n
-            return pattern * dr.rcp(self.normalization)
+            return pattern * self.normalization
 
     # Register new scattering pattern
     register_scattering_pattern("my_pattern", MyPattern)
@@ -89,13 +89,13 @@ snippet. Please note that this example is only meant for illustration purposes.
         """
         def __init__(self, n: int):
             self.n = n
-            self.normalization = dr.sqrt((n+1)/(2*dr.pi))
+            self.normalization = (n+1)/(2*dr.pi)
             self.v = mi.Vector3f([0,0,1])
             dr.enable_grad(self.v) # Enable gradient computation for v
 
         def __call__(self, k_i_local, k_o_local):
             pattern = dr.sum(self.v*k_o_local, axis=0)**self.n
-            return pattern * dr.rcp(self.normalization)
+            return pattern * self.normalization
 
     # Register new scattering pattern
     register_scattering_pattern("my_pattern", MyPattern)

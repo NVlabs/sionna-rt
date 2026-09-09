@@ -7,7 +7,8 @@
 import drjit as dr
 import mitsuba as mi
 from typing import Tuple
-from sionna.rt.utils.misc import safe_atan2
+from sionna.rt.constants import EPSILON_FLOAT
+from sionna.rt.utils.misc import safe_atan2, isclose
 
 
 def phi_hat(phi: mi.Float) -> mi.Vector3f:
@@ -47,20 +48,32 @@ def theta_phi_from_unit_vec(v: mi.Vector3f) -> Tuple[mi.Float, mi.Float]:
     Computes zenith and azimuth angles (:math:`\theta,\varphi`)
     from unit-norm vectors as described in :eq:`theta_phi`
 
+    At the poles, i.e., for :math:`v = (0, 0, \pm 1)`, the azimuth angle is not
+    defined and is set to :math:`\varphi = 0`.
+
     :param v: Unit vector
 
     :return: Zenith angle :math:`\theta` [rad] and azimuth angle :math:`\varphi` [rad]
     """
 
-    # Clip z for numerical stability
-    z = dr.clip(v.z, -1, 1)
-    theta = dr.safe_acos(z)
-    phi = safe_atan2(v.y, v.x)
+    # Norm of the horizontal component, equal to sin(theta) for a unit vector.
+    # The zero case is handled explicitly to avoid an infinite gradient.
+    rho_sqr = dr.square(v.x) + dr.square(v.y)
+    rho = dr.select(rho_sqr > 0., dr.sqrt(rho_sqr), 0.)
+
+    # atan2(rho, z) is accurate for all theta, unlike acos(z) which loses all
+    # precision at the poles where 1-|z| underflows
+    theta = safe_atan2(rho, v.z)
+
+    # Near the poles, rho is dominated by round-off and the azimuth carries no
+    # information. Pinning it to zero keeps the result deterministic.
+    phi = dr.select(rho < EPSILON_FLOAT, mi.Float(0.), safe_atan2(v.y, v.x))
+
     return theta, phi
 
 def r_hat(theta: mi.Float, phi: mi.Float) -> mi.Vector3f:
     r"""
-    Computes the spherical unit vetor :math:`\hat{\mathbf{r}}(\theta, \phi)`
+    Computes the spherical unit vector :math:`\hat{\mathbf{r}}(\theta, \phi)`
     as defined in :eq:`spherical_vecs`
 
     :param theta: Zenith angle :math:`\theta` [rad]
@@ -109,6 +122,52 @@ def rotation_matrix(angles: mi.Point3f) -> mi.Matrix3f:
                            [r_31, r_32, r_33]])
 
     return rot_mat
+
+def look_at_orientation(position: mi.Point3f,
+                        target: mi.Point3f,
+                        target_desc: str = "object") -> mi.Point3f:
+    # pylint: disable=line-too-long
+    r"""
+    Computes the orientation angles :math:`(\alpha, \beta, \gamma)` that make
+    the local x-axis point from ``position`` toward ``target``
+
+    Given the direction :math:`\mathbf{x} = \texttt{target} - \texttt{position}`
+    with spherical angles :math:`\theta` and :math:`\varphi` :eq:`theta_phi`,
+    the returned angles are
+    :math:`\left(\varphi, \theta-\frac{\pi}{2}, 0\right)`, which define a
+    rotation as in :eq:`rotation` with the local z-axis kept in the vertical
+    plane containing :math:`\mathbf{x}`, i.e., the world z-axis is used as
+    up direction.
+
+    For a vertical :math:`\mathbf{x}`, the rotation about the local x-axis is
+    not determined by the look-at direction alone, and :math:`\varphi` is
+    ill-conditioned. In that case, the azimuth is set to :math:`\varphi=0`,
+    which amounts to using :math:`-\hat{\mathbf{x}}` as up direction when
+    looking upward, and :math:`\hat{\mathbf{x}}` when looking downward.
+
+    :param position: Position from which to look
+    :param target: Position to look at
+    :param target_desc: Description of the entity being oriented, used to build
+        the error message raised when ``target`` coincides with ``position``
+
+    :return: Orientation angles :math:`(\alpha, \beta, \gamma)` [rad]
+
+    :raises ValueError: If ``target`` coincides with ``position``, for which
+        the look-at direction is undefined
+    """
+
+    x = mi.Point3f(target) - mi.Point3f(position)
+    if dr.any(isclose(dr.norm(x), mi.Float(0.))):
+        raise ValueError("The look-at target coincides with the "
+                         f"{target_desc} position")
+    x = dr.normalize(x)
+
+    theta, phi = theta_phi_from_unit_vec(x)
+
+    beta = theta - dr.pi/2. # Rotation around y-axis
+    gamma = dr.zeros(mi.Float, dr.width(phi)) # Rotation around x-axis
+
+    return mi.Point3f(phi, beta, gamma)
 
 def rotate_vector_around_axis(x: mi.Vector3f,
                               u: mi.Vector3f,

@@ -17,6 +17,7 @@ then be used for link-level simulations. This is for example done in the `Sionna
 
 .. autoclass:: sionna.rt.Paths
    :members:
+   :exclude-members: __init__
 
 Constants
 ----------

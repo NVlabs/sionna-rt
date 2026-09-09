@@ -10,7 +10,7 @@ from typing import List, Tuple
 
 from sionna.rt.scene import Scene
 from .radio_map import RadioMap
-from sionna.rt.utils import WedgeGeometry, wedge_interior_angle
+from sionna.rt.utils import WedgeGeometry
 
 class MeshRadioMap(RadioMap):
     r"""
@@ -24,11 +24,40 @@ class MeshRadioMap(RadioMap):
     :param scene: Scene for which the radio map is computed
 
     :param meas_surface: Mesh to be used as the measurement surface
+
+    :param check_cells_area: If `True`, reject early measurement surfaces that
+        contain degenerate (zero-area) triangles. Default is `False`.
     """
 
-    def __init__(self, scene: Scene, meas_surface: mi.Mesh):
+    def __init__(self,
+                 scene: Scene,
+                 meas_surface: mi.Mesh,
+                 check_cells_area: bool = False):
 
         super().__init__(scene)
+
+        if not isinstance(meas_surface, mi.Mesh):
+            raise TypeError("`meas_surface` must be a Mitsuba Mesh")
+        if meas_surface.face_count() == 0:
+            raise ValueError(
+                "`meas_surface` must contain at least one triangle"
+            )
+
+        if check_cells_area:
+            # Reject degenerate triangles early: zero area would later yield Inf
+            # when path contributions are normalized by cell area.
+            face_indices = meas_surface.face_indices(
+                dr.arange(mi.UInt, meas_surface.face_count())
+            )
+            v0 = meas_surface.vertex_position(face_indices.x)
+            v1 = meas_surface.vertex_position(face_indices.y)
+            v2 = meas_surface.vertex_position(face_indices.z)
+            e1 = v1 - v0
+            e2 = v2 - v0
+            cell_area = 0.5 * dr.norm(dr.cross(e1, e2))
+            if bool(dr.any(cell_area <= 0)):
+                raise ValueError("`meas_surface` contains degenerate triangles"
+                                 " with zero area")
 
         self._cells_count = meas_surface.face_count()
         self._meas_surface = meas_surface
@@ -61,7 +90,7 @@ class MeshRadioMap(RadioMap):
         r"""Positions of the centers of the cells in the global coordinate
         system
 
-        :type: :py:class:`mi.Point3f [cells_count, 3]`
+        :type: ``mi.Point3f [cells_count, 3]``
         """
         mesh = self.measurement_surface
         ind = mesh.face_indices(dr.arange(mi.UInt, 0, mesh.face_count()))
@@ -80,7 +109,7 @@ class MeshRadioMap(RadioMap):
         # pylint: disable=line-too-long
         r"""Path gains across the radio map from all transmitters [unitless, linear scale]
 
-        :type: :py:class:`mi.TensorXf [num_tx, num_primitives]`
+        :type: ``mi.TensorXf [num_tx, num_primitives]``
         """
         return self._pathgain_map
 
@@ -97,7 +126,8 @@ class MeshRadioMap(RadioMap):
         tx_positions: mi.Point3f | None = None,
         wedges: WedgeGeometry | None = None,
         diff_point: mi.Point3f | None = None,
-        wedges_samples_cnt: mi.UInt | None = None):
+        wedges_samples_cnt: mi.UInt | None = None,
+        diffraction_angular_measure: mi.Float | None = None):
         # pylint: disable=line-too-long
         r"""
         Adds the contribution of the paths that hit the measurement surface
@@ -108,7 +138,7 @@ class MeshRadioMap(RadioMap):
         :param e_fields: Electric fields as real-valued vectors of dimension 4
         :param array_w: Weighting used to model the effect of the transmitter
             array
-        :param si: Informations about the interaction with the measurement
+        :param si: Information about the interaction with the measurement
             surface
         :param k_world: Directions of propagation of the incident paths
         :param tx_indices: Indices of the transmitters from which the rays originate
@@ -121,7 +151,11 @@ class MeshRadioMap(RadioMap):
             Not required for non-diffracted paths.
         :param diff_point: Position of the diffraction point on the wedge.
             Not required for non-diffracted paths.
-        :param wedges_samples_cnt: Number of samples on the wedge.
+        :param wedges_samples_cnt: Number of samples on the wedge for the
+            sample's transmitter.
+            Not required for non-diffracted paths.
+        :param diffraction_angular_measure: Angular measure sampled on the
+            Keller cone.
             Not required for non-diffracted paths.
         """
         # Indices of the hit cells is the primitive ID
@@ -143,9 +177,8 @@ class MeshRadioMap(RadioMap):
                                      active=active)
             w = self._diffraction_integration_weight(wedges, tx_positions_,
                                                      diff_point, k_world, si)
-            # Multiply by edge length and exterior angle
-            w *= wedges.length * (dr.two_pi -
-                                 wedge_interior_angle(wedges.n0, wedges.nn))
+            # Multiply by edge length and the angular measure actually sampled
+            w *= wedges.length * diffraction_angular_measure
             # Divide by the number of samples on this edge
             w /= wedges_samples_cnt
 
@@ -164,6 +197,10 @@ class MeshRadioMap(RadioMap):
         v2_sq_norm = dr.squared_norm(v2)
         cell_area = 0.5 * dr.sqrt(v1_sq_norm * v2_sq_norm
                                   - dr.square(dr.dot(v1, v2)))
+        # Skip zero-area hits so a bad mesh cannot produce Inf through ``rcp``.
+        # When ``check_cells_area`` is `True`, such triangles are also rejected
+        # in ``__init__``.
+        active = mi.Bool(active) & (cell_area > 0)
         # Apply normalization by cell area
         w *= dr.rcp(cell_area)
 
@@ -185,7 +222,7 @@ class MeshRadioMap(RadioMap):
         tx_association: bool = True,
         center_pos: bool = False,
         seed: int = 1
-        ) -> Tuple[mi.TensorXf, mi.TensorXu]:
+        ) -> Tuple[mi.TensorXf, mi.TensorXu, mi.TensorXu]:
         # pylint: disable=line-too-long
         r"""Samples random user positions in a scene based on a radio map
 
@@ -198,6 +235,11 @@ class MeshRadioMap(RadioMap):
         for which the selected metric is the highest across all transmitters.
         This is useful if one wants to ensure, e.g., that the sampled positions
         for each transmitter provide the highest SINR or RSS.
+
+        If no cell satisfies the constraints for a transmitter, that
+        transmitter contributes no samples: the corresponding entry of
+        ``num_valid`` is zero, the matching positions are set to NaN, and the
+        matching cell indices are undefined and must not be used.
 
         Note that due to the quantization of the radio map into cells it is
         not guaranteed that all above parameters are exactly fulfilled for a
@@ -244,8 +286,8 @@ class MeshRadioMap(RadioMap):
                         measurement_surface=measurement_surface,
                         samples_per_tx=100000000)
 
-            positions,_ = rm.sample_positions(num_pos=200, min_val_db=-100.,
-                                            min_dist=50., max_dist=80.)
+            positions, _, num_valid = rm.sample_positions(
+                num_pos=200, min_val_db=-100., min_dist=50., max_dist=80.)
             positions = positions.numpy()
             positions = np.squeeze(positions, axis=0)
 
@@ -271,8 +313,8 @@ class MeshRadioMap(RadioMap):
 
         :param num_pos: Number of returned random positions for each transmitter
 
-        :param metric: Metric to be considered for sampling positions
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be considered for sampling positions.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param min_val_db: Minimum value for the selected metric ([dB] for path
             gain and SINR; [dBm] for RSS).
@@ -302,49 +344,64 @@ class MeshRadioMap(RadioMap):
             positions are randomly drawn from the surface of the cell.
 
         :return: Random positions :math:`(x,y,z)` [m]
-            (shape: :py:class:`[num_tx, num_pos, 3]`) that are in cells
-            fulfilling the configured constraints
+            (shape: ``[num_tx, num_pos, 3]``). For transmitter ``n``,
+            only the first ``num_valid[n]`` entries are valid; the remaining
+            entries are NaN when ``num_valid[n] == 0``.
 
-        :return: Cell indices (shape :py:class:`[num_tx, num_pos]`)
-            corresponding to the random positions
+        :return: Cell indices (shape ``[num_tx, num_pos]``)
+            corresponding to the random positions. Entries beyond
+            ``num_valid[n]`` are undefined.
+
+        :return: Number of valid samples per transmitter
+            (shape ``[num_tx]``)
         """
 
-        sampled_cells = super().sample_cells(num_pos,
+        sampled_cells, num_valid = super().sample_cells(num_pos,
                                             metric,
                                             min_val_db, max_val_db,
                                             min_dist, max_dist,
                                             tx_association,
                                             seed)
 
+        # Per-sample validity mask: [num_tx * num_pos]
+        valid = dr.repeat(mi.Bool(num_valid.array > 0), num_pos)
+
         # If set to True,samples the positions from within the primitive
         if center_pos:
             cell_centers = self.cell_centers
             sampled_pos = dr.gather(mi.Point3f, cell_centers,
-                                    dr.ravel(sampled_cells))
+                                    dr.ravel(sampled_cells), active=valid)
+            sampled_pos = dr.select(valid, sampled_pos,
+                                    mi.Point3f(dr.nan))
             sampled_pos = dr.reshape(mi.TensorXf, sampled_pos,
                                     [self.num_tx, num_pos, 3])
         else:
             # Reset sampler
             self._sampler.seed(seed, num_pos*self.num_tx)
             #
-            v_ind = self.measurement_surface.face_indices(dr.ravel(sampled_cells))
+            v_ind = self.measurement_surface.face_indices(
+                dr.ravel(sampled_cells), active=valid)
             # Three vertices of the triangle
             v0 = v_ind.x
             v1 = v_ind.y
             v2 = v_ind.z
-            v0 = self.measurement_surface.vertex_position(dr.ravel(v0))
-            v1 = self.measurement_surface.vertex_position(dr.ravel(v1))
-            v2 = self.measurement_surface.vertex_position(dr.ravel(v2))
+            v0 = self.measurement_surface.vertex_position(dr.ravel(v0),
+                                                          active=valid)
+            v1 = self.measurement_surface.vertex_position(dr.ravel(v1),
+                                                          active=valid)
+            v2 = self.measurement_surface.vertex_position(dr.ravel(v2),
+                                                          active=valid)
             # Uniformly sample point within the primitive
             esp = self._sampler.next_2d()
             s = dr.sqrt(esp.x)
             t = esp.y
             # Barycentric coordinates
             p = (1-s)*v0 + s*(1-t)*v1 + s*t*v2
+            p = dr.select(valid, p, mi.Point3f(dr.nan))
             # Reshape
             sampled_pos = dr.reshape(mi.TensorXf, p.array, [self.num_tx, num_pos, 3])
 
-        return sampled_pos, sampled_cells
+        return sampled_pos, sampled_cells, num_valid
 
     def _compute_normalization_factor(self):
         """Computes the normalization factor for the path gain map"""

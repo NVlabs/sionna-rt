@@ -1128,8 +1128,8 @@ from the unit square :math:`(0,1) \times (0,1)`
 and used to sample a direction for the scattered wave when required (e.g.,
 when modeling diffuse reflections).
 
-Let's know use the enhanced custom material!
-We start by loading the ``simple_reflector`` scene, but this time with we
+Let's now use the enhanced custom material!
+We start by loading the ``simple_reflector`` scene, but this time we
 instantiate two receivers: one on each side of the reflector to capture both a
 reflected and a transmitted path.
 

@@ -13,12 +13,12 @@ from sionna.rt.constants import InteractionType, MIN_SEGMENT_LENGTH,\
 from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
     spawn_ray_to, sample_wedge_diffraction_point, WedgeGeometry, hash_fnv1a,\
     PlaneHasher, EdgeHasher
-from .sample_data import SampleData
 from .paths_buffer import PathsBuffer
+from .sample_data import SampleData
 
 
 class SBCandidateGenerator:
-    r"""
+    """
     Generates path candidates using shooting-and-bouncing of rays
 
     This is a callable object that returns the candidates as a
@@ -30,7 +30,7 @@ class SBCandidateGenerator:
     be finalized through shooting-and-bouncing of rays and are therefore flagged
     as valid.
 
-    Specular chains, which consists only of specular reflections and/or
+    Specular chains, which consist only of specular reflections and/or
     refractions, are only candidates. They require additional processing,
     e.g., using the image method, to either refine them to valid paths or to
     discard them.
@@ -41,7 +41,7 @@ class SBCandidateGenerator:
 
     This generator ensures that all specular chain candidates are uniquely
     present in the returned buffer. This uniqueness is ensured through hashing
-    of the paths. Note that this can causes loss of candidates due to hash
+    of the paths. Note that this can cause loss of candidates due to hash
     collisions.
     """
 
@@ -111,7 +111,7 @@ class SBCandidateGenerator:
 
         # Allocate memory for `max_num_paths` paths.
         # After the shoot-and-bounce process, if the number of paths found is
-        # below `max_num_paths`, then the tensors are shrinked.
+        # below `max_num_paths`, then the tensors are shrunk.
         paths = PathsBuffer(max_num_paths, max_depth, diffraction)
 
         # Counter indicating how many paths were found for each source.
@@ -133,7 +133,7 @@ class SBCandidateGenerator:
                     paths, samples_per_src, max_num_paths_per_src, max_depth,
                     paths_counter_per_source, specular_reflection,
                     diffuse_reflection, refraction, diffraction,
-                    edge_diffraction)
+                    edge_diffraction, seed)
 
         return paths
 
@@ -166,7 +166,7 @@ class SBCandidateGenerator:
         num_tgt = dr.width(tgt_positions)
 
         # Sample data
-        samples_data = SampleData(num_src, num_tgt, 0, True)
+        samples_data = SampleData(num_src, num_tgt, 0, diffraction=False)
 
         # Target indices
         tgt_indices = dr.arange(mi.UInt, num_tgt)
@@ -206,7 +206,8 @@ class SBCandidateGenerator:
                           diffuse_reflection: bool,
                           refraction: bool,
                           diffraction: bool,
-                          edge_diffraction: bool):
+                          edge_diffraction: bool,
+                          seed: int):  # pylint: disable=unused-argument
         # pylint: disable=line-too-long
         r"""
         Executes shooting-and-bouncing of rays
@@ -217,7 +218,7 @@ class SBCandidateGenerator:
         :param src_positions: Positions of the sources
         :param tgt_positions: Positions of the targets
         :param paths: Buffer storing the candidate paths. Updated in-place.
-        :param samples_per_src: Number of samples spawn per source
+        :param samples_per_src: Number of samples spawned per source
         :param max_num_paths_per_src: Maximum number of candidates per source
         :param max_depth:  Maximum path depths
         :param paths_counter_per_source: Counts the number of paths found for each source
@@ -252,7 +253,7 @@ class SBCandidateGenerator:
                                edge_diffraction_enabled: bool,
                                sampler: mi.Sampler):
         # pylint: disable=line-too-long
-        r"""
+        """
         Executes shooting-and-bouncing of rays
 
         The paths buffer ``path`` is updated in-place.
@@ -260,7 +261,7 @@ class SBCandidateGenerator:
         :param mi_scene: Mitsuba scene
         :param src_positions: Positions of the sources
         :param tgt_positions: Positions of the targets
-        :param samples_per_src: Number of samples spawn per source
+        :param samples_per_src: Number of samples spawned per source
         :param max_num_paths_per_src: Maximum number of candidates per source
         :param max_depth:  Maximum path depths
         :param paths: Buffer storing the candidate paths. Updated in-place.
@@ -469,7 +470,7 @@ class SBCandidateGenerator:
                 # intersection point is in LoS with the target. This condition
                 # is used as an heuristic to reduce the number of candidates.
                 # It also helps to reduce the number of access to the hash table
-                # storing the specular chain counter, and therefore reduces th
+                # storing the specular chain counter, and therefore reduces the
                 # number of collisions.
                 new_specular = specular_chain & los_visible
 
@@ -585,7 +586,7 @@ class SBCandidateGenerator:
                              type_mask=0, component=0)
         # Computation of the Jones matrix is not needed
         ctx.component |= NO_JONES_MATRIX
-        # If diffraction is globally disabled, we can avoid runing the related code
+        # If diffraction is globally disabled, we can avoid running the related code
         # to save computation time
         if diffraction_enabled:
             ctx.component |= InteractionType.DIFFRACTION
@@ -697,8 +698,8 @@ class SBCandidateGenerator:
         diffraction = valid_wedge & (sample2.y < select_threshold)
 
         # Probability of selecting diffraction or other interactions
-        probs = dr.select(diffraction, self.DIFFRACTION_SAMPLING_PROBABILITY,
-                          1. - self.DIFFRACTION_SAMPLING_PROBABILITY)
+        probs = dr.select(diffraction, select_threshold,
+                          1. - select_threshold)
         probs = dr.select(valid_wedge, probs, 1.0)
 
         return diffraction, probs, diff_point, wedges

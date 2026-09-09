@@ -11,14 +11,13 @@ from __future__ import annotations
 
 import os
 from importlib_resources import files
-from typing import List
+from typing import List, Callable
 import contextlib
 
 import drjit as dr
 import matplotlib
 import matplotlib.pyplot as plt
 import mitsuba as mi
-import numpy as np
 from scipy.constants import speed_of_light, Boltzmann
 
 import sionna
@@ -54,6 +53,7 @@ class Scene:
 
     .. code-block:: python
 
+        import sionna
         from sionna.rt import load_scene
         scene = load_scene(sionna.rt.scene.munich)
         scene.preview()
@@ -98,7 +98,8 @@ class Scene:
         if mi_scene is None:
             self._scene = mi.load_dict({ "type": "scene" })
         else:
-            assert isinstance(mi_scene, mi.Scene)
+            if not isinstance(mi_scene, mi.Scene):
+                raise TypeError("`mi_scene` must be an instance of mi.Scene")
             self._scene = mi_scene
         self._scene_params = mi.traverse(self._scene)
 
@@ -143,30 +144,30 @@ class Scene:
     def temperature(self):
         """
         :py:class:`mi.Float`: Get/set the environment temperature [K].
-            Used for the computation of
+            Must be non-negative. Used for the computation of
             :attr:`~sionna.rt.Scene.thermal_noise_power`.
         """
         return self._temperature
 
     @temperature.setter
     def temperature(self, v):
-        if v<0:
-            raise ValueError("temperature must be positive")
+        if v < 0:
+            raise ValueError("temperature must be non-negative")
         self._temperature = mi.Float(v)
 
     @property
     def bandwidth(self):
         """
         :py:class:`mi.Float`: Get/set the transmission bandwidth [Hz].
-            Used for the computation of
+            Must be non-negative. Used for the computation of
             :attr:`~sionna.rt.Scene.thermal_noise_power`.
         """
         return self._bandwidth
 
     @bandwidth.setter
     def bandwidth(self, v):
-        if v<0:
-            raise ValueError("bandwidth must be positive")
+        if v < 0:
+            raise ValueError("bandwidth must be non-negative")
         self._bandwidth = mi.Float(v)
 
     @property
@@ -186,7 +187,7 @@ class Scene:
     @property
     def tx_array(self):
         """
-        :class:`~rt.AntennaArray`: Get/set the antenna array used by
+        :class:`~sionna.rt.AntennaArray`: Get/set the antenna array used by
             all transmitters in the scene
         """
         return self._tx_array
@@ -200,7 +201,7 @@ class Scene:
     @property
     def rx_array(self):
         """
-        :class:`~rt.AntennaArray`: Get/set the antenna array used by
+        :class:`~sionna.rt.AntennaArray`: Get/set the antenna array used by
             all receivers in the scene
         """
         return self._rx_array
@@ -214,7 +215,7 @@ class Scene:
     @property
     def radio_materials(self):
         """
-        :py:class:`dict`, { "name", :class:`~rt.RadioMaterialBase`} :
+        :py:class:`dict`, { "name", :class:`~sionna.rt.RadioMaterialBase`} :
             Dictionary of radio materials
         """
         return dict(self._radio_materials)
@@ -222,7 +223,7 @@ class Scene:
     @property
     def objects(self):
         """
-        :py:class:`dict`, { "name", :class:`~rt.SceneObject`}: Dictionary
+        :py:class:`dict`, { "name", :class:`~sionna.rt.SceneObject`}: Dictionary
             of scene objects
         """
         return dict(self._scene_objects)
@@ -230,7 +231,7 @@ class Scene:
     @property
     def transmitters(self):
         """
-        :py:class:`dict`, { "name", :class:`~rt.Transmitter`}: Dictionary
+        :py:class:`dict`, { "name", :class:`~sionna.rt.Transmitter`}: Dictionary
             of transmitters
         """
         return dict(self._transmitters)
@@ -238,24 +239,14 @@ class Scene:
     @property
     def receivers(self):
         """
-        :py:class:`dict`, { "name", :class:`~rt.Receiver`}: Dictionary
+        :py:class:`dict`, { "name", :class:`~sionna.rt.Receiver`}: Dictionary
             of receivers
         """
         return dict(self._receivers)
 
-    @property
-    def paths_solver(self):
-        """
-        :class:`rt.PathSolverBase`: Get/set the path solver
-        """
-        return self._paths_solver
-
-    @paths_solver.setter
-    def paths_solver(self, solver):
-        self._paths_solver = solver
-
     def get(self, name: str) -> (
         None |
+        sionna.rt.SceneObject |
         sionna.rt.RadioDevice |
         RadioMaterialBase
     ) :
@@ -288,6 +279,12 @@ class Scene:
 
         :param item: Item to be added to the scene
         """
+        if not isinstance(item, (RadioMaterialBase, Transmitter, Receiver)):
+            raise ValueError(
+                f"Cannot add object of type {type(item)} to the scene."
+                " The input must be a Transmitter, Receiver,"
+                " or RadioMaterialBase.")
+
         name = item.name
         s_item = self.get(name)
         if s_item is not None:
@@ -303,13 +300,8 @@ class Scene:
             self._radio_materials[name] = item
         elif isinstance(item, Transmitter):
             self._transmitters[name] = item
-        elif isinstance(item, Receiver):
-            self._receivers[name] = item
         else:
-            raise ValueError(
-                f"Cannot add object of type {type(item)} to the scene."
-                " The input must be a Transmitter, Receiver,"
-                " or RadioMaterialBase.")
+            self._receivers[name] = item
 
     def remove(self, name: str) -> None:
         # pylint: disable=line-too-long
@@ -359,7 +351,8 @@ class Scene:
         and/or remove, rather than making multiple individual calls to edit
         scene objects.
 
-        :param add: Object, or list /dictionary of objects to be added
+        :param add: Object, list of objects, or Mitsuba shape dictionary
+            (accepted by ``mitsuba.load_dict``) to be added
 
         :param remove: Name or object, or list/dictionary of objects or names
             to be added
@@ -373,19 +366,31 @@ class Scene:
 
         # Update the scene objects.
         # Scene objects are not re-instantiated to keep the instances held by
-        # the users valid.
+        # the users valid. Mitsuba shape dictionaries (and other non-SceneObject
+        # entries) have no wrapper yet; those are created below for any shape
+        # that is not already tracked.
         scene_objects = dict(self._scene_objects)
         if add is not None:
             if isinstance(add, sionna.rt.SceneObject):
-                add = [add]
-            scene_objects.update({o.name: o for o in add})
+                items = [add]
+            elif isinstance(add, dict):
+                items = []
+            else:
+                items = add
+            for o in items:
+                if isinstance(o, sionna.rt.SceneObject):
+                    scene_objects[o.name] = o
 
         self._scene_objects = {}
         for s in self._scene.shapes():
             name = sionna.rt.SceneObject.shape_id_to_name(s.id())
             obj = scene_objects.get(name)
-            assert obj
-            obj.mi_mesh = s
+            if obj is None:
+                if not isinstance(s, mi.Mesh):
+                    raise TypeError('Only triangle meshes are supported')
+                obj = sionna.rt.SceneObject(mi_mesh=s)
+            else:
+                obj.mi_mesh = s
             self._add_scene_object(obj)
 
         # Reset the preview widget to ensure the preview is redraw
@@ -404,7 +409,7 @@ class Scene:
         rm_tx: int | str | None = None,
         rm_vmax: float | None = None,
         rm_vmin: float | None = None,
-        rm_cmap: callable | str | None = None,
+        rm_cmap: Callable | str | None = None,
         show_devices: bool = True,
         show_orientations: bool = False,
         point_picker: bool = True
@@ -445,8 +450,8 @@ class Scene:
             visualization, i.e. the radio map values are mapped to:
             :math:`y = 10 \cdot \log_{10}(x)`.
 
-        :param rm_metric: Metric of the radio map to be displayed
-        :type rm_metric: "path_gain" | "rss" | "sinr"
+        :param rm_metric: Metric of the radio map to be displayed.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param rm_tx: When ``radio_map`` is specified, controls for which of
             the transmitters the radio map is shown. Either the
@@ -478,7 +483,10 @@ class Scene:
             alt + click in order to display its coordinates.
         """
         if (self._preview_widget is not None) and (resolution is not None):
-            assert isinstance(resolution, (tuple, list)) and len(resolution) == 2
+            if not (isinstance(resolution, (tuple, list))
+                    and len(resolution) == 2):
+                raise ValueError(
+                    "`resolution` must be a tuple or list of length 2")
             if tuple(resolution) != self._preview_widget.resolution:
                 # User requested a different rendering resolution, create
                 # a new viewer from scratch to match it.
@@ -548,7 +556,7 @@ class Scene:
         rm_tx: int | str | None = None,
         rm_vmax: float | None = None,
         rm_vmin: float | None = None,
-        rm_cmap: str | callable | None = None,
+        rm_cmap: str | Callable | None = None,
         show_devices: bool = True,
         show_orientations: bool = False
     ) -> plt.Figure | mi.Bitmap:
@@ -592,8 +600,8 @@ class Scene:
             visualization, i.e. the radio map values are mapped to:
             :math:`y = 10 \cdot \log_{10}(x)`.
 
-        :param rm_metric: Metric of the radio map to be displayed
-        :type rm_metric: "path_gain" | "rss" | "sinr"
+        :param rm_metric: Metric of the radio map to be displayed.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param rm_show_color_bar: Show color bar
 
@@ -666,12 +674,10 @@ class Scene:
         im_ax.imshow(to_show)
 
         if show_color_bar:
-            cm = getattr(radio_map, rm_metric).numpy()
-            if rm_tx is None:
-                cm = np.max(cm, axis=0)
-            else:
-                cm = cm[rm_tx]
-                # Ensure that dBm is correctly computed for RSS
+            # Use transmitter_radio_map so rm_tx may be an index or a name
+            cm = radio_map.transmitter_radio_map(
+                metric=rm_metric, tx=rm_tx).numpy()
+            # Ensure that dBm is correctly computed for RSS
             if rm_metric=="rss" and rm_db_scale:
                 cm *= 1000
             _, normalizer, color_map = radio_map_color_mapping(
@@ -709,6 +715,7 @@ class Scene:
         rm_tx: int | str | None=None,
         rm_vmin: float | None=None,
         rm_vmax: float | None=None,
+        rm_cmap: Callable | str | None = None,
         show_devices: bool=True,
         show_orientations: bool=True
     ) -> mi.Bitmap:
@@ -754,8 +761,8 @@ class Scene:
             visualization, i.e. the radio map values are mapped to:
             :math:`y = 10 \cdot \log_{10}(x)`.
 
-        :param rm_metric: Metric of the radio map to be displayed
-        :type rm_metric: "path_gain" | "rss" | "sinr"
+        :param rm_metric: Metric of the radio map to be displayed.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param rm_tx: When ``radio_map`` is specified, controls for which of
             the transmitters the radio map is shown. Either the
@@ -772,6 +779,13 @@ class Scene:
             It should be provided in dB if ``rm_db_scale`` is
             set to `True`, or in linear scale otherwise.
 
+        :param rm_cmap: For coverage map visualization, defines the colormap to use.
+            If set to None, then the default colormap is used.
+            If a string is given, it is interpreted as a Matplotlib colormap name.
+            If a callable is given, it is used as a custom colormap function with
+            the same interface as a Matplotlib colormap.
+            Defaults to `None`.
+
         :param show_devices: Show radio devices
 
         :param show_orientations: Show orientation of radio devices
@@ -787,6 +801,7 @@ class Scene:
             radio_map=radio_map,
             rm_tx=rm_tx,
             rm_db_scale=rm_db_scale,
+            rm_cmap=rm_cmap,
             rm_vmin=rm_vmin,
             rm_vmax=rm_vmax,
             rm_metric=rm_metric,
@@ -802,7 +817,7 @@ class Scene:
             image = image.convert(component_format=mi.Struct.Type.UInt8,
                                   pixel_format=mi.Bitmap.PixelFormat.RGB,
                                   srgb_gamma=True)
-        elif ext in ('.png', '.tga' '.bmp'):
+        elif ext in ('.png', '.tga', '.bmp'):
             image = image.convert(component_format=mi.Struct.Type.UInt8,
                                   srgb_gamma=True)
         image.write(filename)
@@ -838,7 +853,7 @@ class Scene:
         :return: Positions of the sources
         :return: Orientations of the sources
         :return: Positions of the antenna elements relative to the transmitters
-            positions. `None` is returned if ``synthetic_array`` is `True`.
+            positions. `None` is returned if ``synthetic_array`` is `False`.
         :return: Velocities of the transmitters. `None` is returned if
             `return_velocities` is set to `False`.
         """
@@ -857,14 +872,14 @@ class Scene:
         Builds arrays containing the positions and orientations of the targets
 
         If synthetic arrays are not used, then every receiver antenna is modeled
-        as a source of paths. Otherwise, receivers are modelled as if they
+        as a target of paths. Otherwise, receivers are modelled as if they
         had a single antenna located at their :attr:`~sionna.rt.RadioDevice.position`.
 
         :return: Positions of the targets
         :return: Orientations of the targets
-        :return: Positions of the antenna elements relative to the receivers.
-            Only returned if ``synthetic_array`` is `True`.
-        :return: Velocities of the transmitters. `None` is returned if
+        :return: Positions of the antenna elements relative to the receivers
+            positions. `None` is returned if ``synthetic_array`` is `False`.
+        :return: Velocities of the receivers. `None` is returned if
             `return_velocities` is set to `False`.
         """
 
@@ -909,8 +924,10 @@ class Scene:
     def use_mi_scene(self, scene: mi.Scene):
         old_scene = self._scene
         self._scene = scene
-        yield
-        self._scene = old_scene
+        try:
+            yield
+        finally:
+            self._scene = old_scene
 
     def _load_scene_objects(self, remove_duplicate_vertices: bool):
         """
@@ -1021,7 +1038,7 @@ class Scene:
         :return: Positions of the endpoints
         :return: Orientations of the endpoints
         :return: Positions of the antenna elements relative to the endpoints
-            positions. `None` is returned if ``synthetic_array`` is `True`.
+            positions. `None` is returned if ``synthetic_array`` is `False`.
         :return: Velocities of the radio devices. `None` is returned
             if `return_velocities` is set to `False`.
         """
@@ -1132,7 +1149,7 @@ def load_scene_from_string(
     r"""
     Loads a scene from an XML string.
 
-    :param scene_string: XML string containing the scene.
+    :param xml_string: XML string containing the scene.
     :param merge_shapes: If set to `True`, shapes that share
         the same radio material are merged.
     :param merge_shapes_exclude_regex: Optional regex to exclude shapes from

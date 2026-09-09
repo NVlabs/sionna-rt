@@ -11,7 +11,7 @@ import dataclasses
 
 from sionna.rt.constants import InteractionType, INVALID_SHAPE,\
     INVALID_PRIMITIVE
-from sionna.rt.utils import theta_phi_from_unit_vec, WedgeGeometry
+from sionna.rt.utils import WedgeGeometry
 
 
 class PathsBufferBase:
@@ -213,7 +213,7 @@ class PathsBufferBase:
         shape_int = self.get_shape(depth, valid)
         mesh_ptr = dr.reinterpret_array(mi.MeshPtr, shape_int)
 
-        # Primitive indiex
+        # Primitive index
         prim_ind = self.get_primitive(depth, valid)
 
         output = []
@@ -286,7 +286,7 @@ class PathsBuffer(PathsBufferBase):
 
         # Effective number of paths. This counter should be used to count the
         # number of paths effectively found by a solver.
-        # Note that the buffer can be shrinked to this value using self.shrink()
+        # Note that the buffer can be shrunk to this value using self.shrink()
         self._paths_counter = mi.UInt(0)
 
         # Set to True for if the path is valid
@@ -298,12 +298,16 @@ class PathsBuffer(PathsBufferBase):
         # Index of the target to which the path connects to
         self._tgt_indices = dr.zeros(mi.UInt, buffer_size)
 
-        # Angles of arrival and departure
-        self._theta_t = dr.zeros(mi.Float, buffer_size)
-        self._phi_t = dr.zeros(mi.Float, buffer_size)
+        # Directions of departure and arrival as unit vectors.
+        # As for the path vertices, the components are stored in separate
+        # arrays, as Dr.Jit requires scatter targets to be flat arrays.
+        self._k_tx_x = dr.zeros(mi.Float, buffer_size)
+        self._k_tx_y = dr.zeros(mi.Float, buffer_size)
+        self._k_tx_z = dr.zeros(mi.Float, buffer_size)
         #
-        self._theta_r = dr.zeros(mi.Float, buffer_size)
-        self._phi_r = dr.zeros(mi.Float, buffer_size)
+        self._k_rx_x = dr.zeros(mi.Float, buffer_size)
+        self._k_rx_y = dr.zeros(mi.Float, buffer_size)
+        self._k_rx_z = dr.zeros(mi.Float, buffer_size)
 
         # Type of interaction (specular reflection, diffuse reflection, etc)
         self._interaction_types = dr.full(mi.TensorXu, InteractionType.NONE,
@@ -313,7 +317,7 @@ class PathsBuffer(PathsBufferBase):
         # These are stored for field computation
         self._probs = dr.zeros(mi.TensorXf, [buffer_size, self.depth_dim_size])
 
-        # Channel inpulse response coefficients and delays are initialized to
+        # Channel impulse response coefficients and delays are initialized to
         # `None`
         self._a = None
         self._tau = None
@@ -336,6 +340,10 @@ class PathsBuffer(PathsBufferBase):
         :type: :py:class:`int`
         """
         return self._paths_counter
+
+    def advance_paths_counter(self, add_n: mi.UInt32 | int) -> None:
+        """Add the given number to the paths counter. Not atomic."""
+        self._paths_counter += add_n
 
     @property
     def valid(self):
@@ -366,36 +374,22 @@ class PathsBuffer(PathsBufferBase):
         return self._tgt_indices
 
     @property
-    def theta_t(self):
-        r"""Zenith  angles of departure [rad]
+    def k_tx(self):
+        r"""Directions of departure as unit vectors
 
-        :type: :py:class:`mi.Float`
+        :type: :py:class:`mi.Vector3f`
         """
-        return self._theta_t
+        return mi.Vector3f(self._k_tx_x, self._k_tx_y, self._k_tx_z)
 
     @property
-    def phi_t(self):
-        r"""Azimuth  angles of departure [rad]
+    def k_rx(self):
+        r"""Directions of arrival as unit vectors, pointing from the target
+        towards the direction from which the wave arrives, i.e., opposite to
+        the direction of propagation of the incident wave
 
-        :type: :py:class:`mi.Float`
+        :type: :py:class:`mi.Vector3f`
         """
-        return self._phi_t
-
-    @property
-    def theta_r(self):
-        r"""Zenith  angles of arrival [rad]
-
-        :type: :py:class:`mi.Float`
-        """
-        return self._theta_r
-
-    @property
-    def phi_r(self):
-        r"""Azimuth angles of arrival [rad]
-
-        :type: :py:class:`mi.Float`
-        """
-        return self._phi_r
+        return mi.Vector3f(self._k_rx_x, self._k_rx_y, self._k_rx_z)
 
     @property
     def interaction_types(self):
@@ -470,10 +464,12 @@ class PathsBuffer(PathsBufferBase):
             self._valid,
             self._src_indices,
             self._tgt_indices,
-            self._theta_t,
-            self._phi_t,
-            self._theta_r,
-            self._phi_r,
+            self._k_tx_x,
+            self._k_tx_y,
+            self._k_tx_z,
+            self._k_rx_x,
+            self._k_rx_y,
+            self._k_rx_z,
             self._interaction_types,
             self._vertices_x,
             self._vertices_y,
@@ -508,8 +504,9 @@ class PathsBuffer(PathsBufferBase):
         :param sample_data: Paths data to store
         :param valid: Flags indicating if the paths are valid, i.e., if their compute are finalized
         :param tgt_index: Targets to which the paths connect
-        :param k_tx: Directions of departure of the paths
-        :param k_rx: Directions of arrival of the paths
+        :param k_tx: Directions of departure of the paths as unit vectors
+        :param k_rx: Directions of arrival of the paths as unit vectors,
+            pointing opposite to the direction of propagation
         :param active: Flags specifying active paths. Inactive paths are not added.
         """
 
@@ -521,16 +518,13 @@ class PathsBuffer(PathsBufferBase):
         dr.scatter(self._src_indices, sample_data.src_indices, indices, active)
         # Update the target index
         dr.scatter(self._tgt_indices, tgt_index, indices, active)
-        # Update direction of departure
-        theta_t, phi_t = theta_phi_from_unit_vec(k_tx)
-        dr.scatter(self._theta_t, theta_t, indices, active)
-        dr.scatter(self._phi_t, phi_t, indices, active)
-        # Update direction of arrival
-        theta_r, phi_r = theta_phi_from_unit_vec(k_rx)
-        dr.scatter(self._theta_r, theta_r, indices, active)
-        dr.scatter(self._phi_r, phi_r, indices, active)
+        # Update directions of departure and arrival
+        self._scatter_k(self._k_tx_x, self._k_tx_y, self._k_tx_z, k_tx,
+                        indices, active)
+        self._scatter_k(self._k_rx_x, self._k_rx_y, self._k_rx_z, k_rx,
+                        indices, active)
         # Diffracting wedge
-        if self._diffraction:
+        if self._diffraction and (sample_data.diffracting_wedges is not None):
             dr.scatter(self._diffracting_wedges,
                        sample_data.diffracting_wedges,
                        indices, active)
@@ -538,10 +532,10 @@ class PathsBuffer(PathsBufferBase):
         # Only add additional path data if `max_depth > 0`
         d = dr.ones(mi.UInt, dr.width(active))
         while d <= depth:
-            interaction_types, shapes, primitives, vertices, probs\
+            interaction_types, shapes, primitives, vertices, probs \
                 = sample_data.get(d, active=active)
 
-            # Indices for updating the interation type, shape, and primitive
+            # Indices for updating the interaction type, shape, and primitive
             # arrays
             indices_t = indices*depth_dim_size + d - 1
 
@@ -563,9 +557,9 @@ class PathsBuffer(PathsBufferBase):
 
     def shrink(self) -> None:
         r"""
-        Shrinks the buffer size to :attr:`~sionna.rt.PathsBuffer.path_counter`
+        Shrinks the buffer size to :attr:`~sionna.rt.PathsBuffer.paths_counter`
 
-        Only the first :attr:`~sionna.rt.PathsBuffer.path_counter` items are
+        Only the first :attr:`~sionna.rt.PathsBuffer.paths_counter` items are
         kept.
         """
 
@@ -595,14 +589,18 @@ class PathsBuffer(PathsBufferBase):
         if self._doppler is not None:
             self._doppler = dr.reshape(mi.Float, self._doppler, num_paths,
                                        shrink=True)
-        self._theta_t = dr.reshape(mi.Float, self._theta_t,
-                                   num_paths, shrink=True)
-        self._phi_t = dr.reshape(mi.Float, self._phi_t,
-                                 num_paths, shrink=True)
-        self._theta_r = dr.reshape(mi.Float, self._theta_r,
-                                   num_paths, shrink=True)
-        self._phi_r = dr.reshape(mi.Float, self._phi_r,
-                                 num_paths, shrink=True)
+        self._k_tx_x = dr.reshape(mi.Float, self._k_tx_x,
+                                  num_paths, shrink=True)
+        self._k_tx_y = dr.reshape(mi.Float, self._k_tx_y,
+                                  num_paths, shrink=True)
+        self._k_tx_z = dr.reshape(mi.Float, self._k_tx_z,
+                                  num_paths, shrink=True)
+        self._k_rx_x = dr.reshape(mi.Float, self._k_rx_x,
+                                  num_paths, shrink=True)
+        self._k_rx_y = dr.reshape(mi.Float, self._k_rx_y,
+                                  num_paths, shrink=True)
+        self._k_rx_z = dr.reshape(mi.Float, self._k_rx_z,
+                                  num_paths, shrink=True)
         self._interaction_types = mi.TensorXu(
             dr.reshape(mi.UInt, self._interaction_types.array,
                        num_paths*depth_dim_size, shrink=True),
@@ -692,10 +690,12 @@ class PathsBuffer(PathsBufferBase):
             self._tau = dr.gather(mi.Float, self._tau, valid_ind)
         if self._doppler is not None:
             self._doppler = dr.gather(mi.Float, self._doppler, valid_ind)
-        self._theta_t = dr.gather(mi.Float, self._theta_t, valid_ind)
-        self._phi_t = dr.gather(mi.Float, self._phi_t, valid_ind)
-        self._theta_r = dr.gather(mi.Float, self._theta_r, valid_ind)
-        self._phi_r = dr.gather(mi.Float, self._phi_r, valid_ind)
+        self._k_tx_x = dr.gather(mi.Float, self._k_tx_x, valid_ind)
+        self._k_tx_y = dr.gather(mi.Float, self._k_tx_y, valid_ind)
+        self._k_tx_z = dr.gather(mi.Float, self._k_tx_z, valid_ind)
+        self._k_rx_x = dr.gather(mi.Float, self._k_rx_x, valid_ind)
+        self._k_rx_y = dr.gather(mi.Float, self._k_rx_y, valid_ind)
+        self._k_rx_z = dr.gather(mi.Float, self._k_rx_z, valid_ind)
         self._interaction_types = mi.TensorXu(
             dr.gather(mi.UInt, self._interaction_types.array, tensor_gind),
             shape=(num_valid_paths, depth_dim_size)
@@ -762,34 +762,30 @@ class PathsBuffer(PathsBufferBase):
         """
         return self._gather_depth(mi.Float, self._probs, depth, active)
 
-    def set_angles_tx(self, k_tx: mi.Vector3f, active: mi.Bool) -> None:
+    def set_k_tx(self, k_tx: mi.Vector3f, active: mi.Bool) -> None:
         r"""
-        Sets the angles of departure :attr:`~sionna.rt.theta_t`,
-        :attr:`~sionna.rt.phi_t` from the directions of departure ``k_tx``
+        Sets the directions of departure :attr:`~sionna.rt.PathsBuffer.k_tx`
 
-        :param k_tx: Directions of departure
+        :param k_tx: Directions of departure as unit vectors
         :param active: Flags specifying active components
         """
 
-        theta_t, phi_t = theta_phi_from_unit_vec(k_tx)
         indices = dr.arange(mi.UInt, self.buffer_size)
-        dr.scatter(self._theta_t, theta_t, indices, active)
-        dr.scatter(self._phi_t, phi_t, indices, active)
+        self._scatter_k(self._k_tx_x, self._k_tx_y, self._k_tx_z, k_tx,
+                        indices, active)
 
-    def set_angles_rx(self, k_rx: mi.Vector3f, active: mi.Bool) -> None:
+    def set_k_rx(self, k_rx: mi.Vector3f, active: mi.Bool) -> None:
         r"""
-        Sets the angles of arrival :attr:`~sionna.rt.theta_r`,
-        :attr:`~sionna.rt.phi_r` from the directions of arrival ``k_rx``
+        Sets the directions of arrival :attr:`~sionna.rt.PathsBuffer.k_rx`
 
-        :param k_rx: Directions of arrival
+        :param k_rx: Directions of arrival as unit vectors, pointing opposite
+            to the direction of propagation of the incident wave
         :param active: Flags specifying active components
         """
 
-        # Update direction of arrival
-        theta_r, phi_r = theta_phi_from_unit_vec(k_rx)
         indices = dr.arange(mi.UInt, self.buffer_size)
-        dr.scatter(self._theta_r, theta_r, indices, active)
-        dr.scatter(self._phi_r, phi_r, indices, active)
+        self._scatter_k(self._k_rx_x, self._k_rx_y, self._k_rx_z, k_rx,
+                        indices, active)
 
     def set_interaction_type(self,
                              depth: mi.UInt,
@@ -873,22 +869,48 @@ class PathsBuffer(PathsBufferBase):
     def detach_geometry(self) -> None:
         r"""
         Detaches the arrays storing the paths geometries (i.e., vertices and
-        angles) from the automatic differentiation compuational graph
+        directions of departure and arrival) from the automatic differentiation
+        computational graph
         """
 
         self._vertices_x = dr.detach(self._vertices_x)
         self._vertices_y = dr.detach(self._vertices_y)
         self._vertices_z = dr.detach(self._vertices_z)
-        self._theta_t = dr.detach(self._theta_t)
-        self._phi_t = dr.detach(self._phi_t)
-        self._theta_r = dr.detach(self._theta_r)
-        self._phi_r = dr.detach(self._phi_r)
+        self._k_tx_x = dr.detach(self._k_tx_x)
+        self._k_tx_y = dr.detach(self._k_tx_y)
+        self._k_tx_z = dr.detach(self._k_tx_z)
+        self._k_rx_x = dr.detach(self._k_rx_x)
+        self._k_rx_y = dr.detach(self._k_rx_y)
+        self._k_rx_z = dr.detach(self._k_rx_z)
         if self._diffraction:
             self._diffracting_wedges = dr.detach(self._diffracting_wedges)
 
     ###############################################
     # Internal methods
     ###############################################
+
+    @staticmethod
+    def _scatter_k(k_x: mi.Float,
+                   k_y: mi.Float,
+                   k_z: mi.Float,
+                   value: mi.Vector3f,
+                   indices: mi.UInt,
+                   active: mi.Bool) -> None:
+        r"""
+        Scatters the components of the direction vectors ``value`` into the
+        arrays ``k_x``, ``k_y``, and ``k_z``
+
+        :param k_x: Array storing the x components
+        :param k_y: Array storing the y components
+        :param k_z: Array storing the z components
+        :param value: Direction vectors to insert
+        :param indices: Indices at which to insert the direction vectors
+        :param active: Flags specifying active components
+        """
+
+        dr.scatter(k_x, value.x, indices, active)
+        dr.scatter(k_y, value.y, indices, active)
+        dr.scatter(k_z, value.z, indices, active)
 
     def _scatter_depth(self,
                        tensor: mi.TensorXf | mi.TensorXu | mi.TensorXb,

@@ -6,14 +6,18 @@
 
 # pylint: disable=wrong-import-position
 
-__version__ = "2.0.1"
+__version__ = "2.1.0"
 
 import importlib
 
 import mitsuba as mi
 if mi.variant() is None:
     try:
-        mi.set_variant("cuda_ad_mono_polarized", "llvm_ad_mono_polarized")
+        mi.set_variant(
+            "cuda_ad_mono_polarized",
+            "metal_ad_mono_polarized",
+            "llvm_ad_mono_polarized",
+        )
     except ImportError:
         mi.set_variant("llvm_ad_mono_polarized")
 

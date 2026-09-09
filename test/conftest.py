@@ -24,4 +24,4 @@ def pytest_configure(config):
         print("\n========================================\n")
         print("    Running tests on GPU if available")
         print("\n========================================\n")
-        mi.set_variant("cuda_ad_mono_polarized", "llvm_ad_mono_polarized")
+        mi.set_variant("cuda_ad_mono_polarized", "metal_ad_mono_polarized", "llvm_ad_mono_polarized")

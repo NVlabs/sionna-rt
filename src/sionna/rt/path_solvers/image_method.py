@@ -23,7 +23,7 @@ class ImageMethod:
 
     This class processes the candidate specular suffixes and specular chains
     using the image method to compute valid paths from the candidates specular
-    chains and suffixes. It consists in 5 steps:
+    chains and suffixes. It consists of 4 steps:
 
     1. The depth at which the specular suffix starts is determined.
     This depth corresponds to the lowest depth from which the path consists only
@@ -34,11 +34,11 @@ class ImageMethod:
     is simply the source of the path. For specular suffixes, it is
     the intersection point preceding the specular suffix.
 
-    4. Image computations: Images of the sources are computed by reflecting them
+    3. Image computations: Images of the sources are computed by reflecting them
     on surfaces on which a specular reflection occurred. Refraction events
     are ignored during this step.
 
-    5. Backtracking: Tracing is done backward from the targets to the sources,
+    4. Backtracking: Tracing is done backward from the targets to the sources,
     by spawning rays toward the images, first from the target, then from the
     intersection points of the rays with the scene. These intersection
     points are the final vertices of the paths for specular reflections and
@@ -81,7 +81,7 @@ class ImageMethod:
                  src_positions: mi.Point3f,
                  tgt_positions: mi.Point3f) -> PathsBuffer:
         r"""
-        Exectues the image method
+        Executes the image method
 
         :param scene: Mitsuba scene
         :param paths: Candidate paths
@@ -159,11 +159,11 @@ class ImageMethod:
                                       valid_candidate: mi.Bool
                                       ) -> Tuple[mi.Point3f, mi.Point3f]:
         r"""
-        Gathers the sources and targets of every paths
+        Gathers the sources and targets of every path
 
         :param paths: Candidate paths
         :param src_positions: Positions of the sources
-        :param tgt_positions  Positions of the targets
+        :param tgt_positions: Positions of the targets
         :param valid_candidate: Flags specifying candidates marked as valid
 
         :return: Sources and targets of all paths
@@ -228,7 +228,7 @@ class ImageMethod:
             specular chain but ends with a specular suffix
 
         :param paths: Candidate paths
-        :param paths_sources: Sources of every paths
+        :param paths_sources: Sources of every path
         :param sf_start_depth: Depths at which the specular suffixes start
         :param valid_candidate: Flags specifying candidates marked as valid
 
@@ -261,7 +261,7 @@ class ImageMethod:
         :param paths: Candidate paths
         :param diffraction_enabled: Flag indicating if diffraction is enabled
         :param sf_source: Positions of the sources of the specular suffixes
-        :param sf_start_depth: Depths at which the specular suffixes starts
+        :param sf_start_depth: Depths at which the specular suffixes start
         :param valid_candidate: Flag specifying candidates marked as valid
 
         :return: Images of the sources
@@ -623,9 +623,9 @@ class ImageMethod:
             # as the path vertex, update the direction of arrival as well as
             # the shape and primitive indices
             paths.set_vertex(depth, next_vertex, valid_inter)
-            # Update the angle of arrival if this is the last segment of the
-            # specular suffix
-            paths.set_angles_rx(ray.d, valid_inter & was_none)
+            # Update the direction of arrival if this is the last segment of
+            # the specular suffix
+            paths.set_k_rx(ray.d, valid_inter & was_none)
             paths.set_shape(depth, si_shape,
                             valid_inter & ~should_not_intersect)
             paths.set_primitive(depth, si_scene.prim_index,
@@ -648,10 +648,10 @@ class ImageMethod:
             was_none = dr.copy(none)
             was_diffraction = dr.copy(diffraction)
 
-        # If the candidate is valid, then update the direction of depature
+        # If the candidate is valid, then update the direction of departure
         specular_chain = (sf_start_depth == 1) & valid_candidate
         vertex = paths.get_vertex(sf_start_depth, specular_chain)
         d_tx = dr.normalize(vertex - sf_source)
-        paths.set_angles_tx(d_tx, specular_chain)
+        paths.set_k_tx(d_tx, specular_chain)
 
         return valid_candidate

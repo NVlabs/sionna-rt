@@ -13,26 +13,26 @@ from sionna.rt.utils import WedgeGeometry
 
 
 class SampleData:
-    r"""
+    """
     Class used to store shoot-and-bounce samples data
 
-    A sample is a path spawn from a source when running shooting and
+    A sample is a path spawned from a source when running shooting and
     bouncing of rays. However, to distinguish these paths from the ones stored
     in a :class:`~sionna.rt.PathsBuffer`, which are further processed and/or
-    returned by the solver, the paths spawn during shooting and bouncing of rays
-    are referred to as "samples".
+    returned by the solver, the paths spawned during shooting and bouncing of
+    rays are referred to as "samples".
 
     Each sample can lead to the recording in a :class:`~sionna.rt.PathsBuffer`
     of one or more paths.
 
     :param num_sources: Number of sources
-    :param samples_per_src: Number of samples spawn per source
+    :param samples_per_src: Number of samples spawned per source
     :param max_depth: Maximum depth
     """
 
     @dataclass
     class SampleDataFields:
-        r"""
+        """
         Dataclass used to store information of a single sample and for a single
         interaction
 
@@ -40,6 +40,7 @@ class SampleData:
         :data shape: Pointer to the intersected shape as an unsigned integer
         :data primitive: Index of the intersected primitive
         :data vertex: Coordinates of the intersection point with the scene
+        :data prob: Probability of the sampled interaction type
         """
 
         interaction_type    : mi.UInt
@@ -63,25 +64,30 @@ class SampleData:
         # Samples-first ordering is used, i.e., the samples are ordered as
         # follows:
         # [source_0_samples..., source_1_samples..., ...]
-        src_indices = dr.arange(mi.UInt, 0, num_sources)
-        src_indices = dr.repeat(src_indices, samples_per_src)
-        self._src_indices = src_indices
+        self._src_indices = source_index_per_sample(num_sources,
+                                                    samples_per_src)
 
         # Structure storing the data for a single sample.
         # A DrJit local memory is used to enable read-after-write dependencies.
         # That implies that a buffer is created for each thread, which ray trace
         # a single sample, to store information about this sample.
-        # The size of the buffer is set to `max_depth`, as a sample can consists
+        # The size of the buffer is set to `max_depth`, as a sample can consist
         # of up to that many interactions with the scene.
         # See https://drjit.readthedocs.io/en/latest/misc.html#local-memory
+        init_value = dr.zeros(SampleData.SampleDataFields)
         self._local_mem = dr.alloc_local(SampleData.SampleDataFields,
-                                         array_size)
+                                         array_size,
+                                         value=init_value)
 
         # Diffracting wedge geometry. As diffraction is only supported for first
         # order, we do not need to store the wedge geometry for each depth.
         self._diffraction = diffraction
         if diffraction:
-            self._diffracting_wedges = dr.alloc_local(WedgeGeometry, 1)
+            init_value = dr.zeros(WedgeGeometry)
+            self._diffracting_wedges = dr.alloc_local(WedgeGeometry, 1,
+                                                      value=init_value)
+        else:
+            self._diffracting_wedges = None
 
     def insert(self,
                depth: mi.UInt,
@@ -100,7 +106,7 @@ class SampleData:
         :param interaction_types: Type of interaction represented using :class:`~sionna.rt.constants.InteractionType`
         :param shapes: Pointers to the intersected shapes
         :param primitives: Indices of the intersected primitives
-        :param wedge_geometry: Diffracting wedge geometry
+        :param diffracting_wedges: Diffracting wedge geometry
         :param vertices: Coordinates of the intersection points
         :param probs: Probabilities of the sampled interaction types
         :param active: Mask of active samples
@@ -112,8 +118,12 @@ class SampleData:
         shapes = dr.reinterpret_array(mi.UInt, shapes)
 
         # Store data in the buffer
-        data = SampleData.SampleDataFields(interaction_types, shapes,
-                                           primitives, vertices, probs)
+        data = SampleData.SampleDataFields(dr.detach(interaction_types),
+                                           dr.detach(shapes),
+                                           dr.detach(primitives),
+                                           dr.detach(vertices),
+                                           dr.detach(probs))
+
         self._local_mem.write(data, index, active=active)
 
         # Store the local edge index and edge properties
@@ -139,7 +149,6 @@ class SampleData:
         :return: Type of interaction represented using :class:`~sionna.rt.constants.InteractionType`
         :return: Pointers to the intersected shapes
         :return: Indices of the intersected primitives
-        :return: Local indices of the diffracting edges
         :return: Coordinates of the intersection points
         :return: Probabilities of the sampled interaction types
         """
@@ -171,3 +180,12 @@ class SampleData:
         :type: :py:class:`mi.UInt`
         """
         return self._src_indices
+
+
+def source_index_per_sample(num_sources: int, samples_per_src: int) -> mi.UInt:
+    """Index of the source corresponding to sample (ray / thread).
+    Samples-first ordering is used, i.e., the samples are ordered as follows:
+        [source_0_samples..., source_1_samples..., ...]
+    """
+    src_indices = dr.arange(mi.UInt, 0, num_sources)
+    return dr.repeat(src_indices, samples_per_src)

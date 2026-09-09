@@ -8,7 +8,6 @@ import drjit as dr
 import mitsuba as mi
 
 from .geometry import theta_phi_from_unit_vec, theta_hat
-from .misc import isclose
 
 
 def implicit_basis_vector(k: mi.Vector3f) -> mi.Vector3f:
@@ -27,7 +26,46 @@ def implicit_basis_vector(k: mi.Vector3f) -> mi.Vector3f:
 
     theta, phi = theta_phi_from_unit_vec(k)
     v = theta_hat(theta, phi)
-    return v
+
+    # Near poles, using `v` as implicit basis vector may be unstable
+    near_pole = dr.abs(k.z) > 1 - 5e-7 # \approx sqrt(1 - 1e-6)
+    fallback_reference = mi.Vector3f(-1., 0., 0.)
+    # Ensure orthogonality to k
+    fallback = fallback_reference - dr.dot(fallback_reference, k)*k
+    fallback = dr.normalize(fallback)
+
+    return dr.select(near_pole, fallback, v)
+
+def transverse_basis_from_normal(
+    k: mi.Vector3f,
+    normal: mi.Vector3f
+) -> mi.Vector3f:
+    r"""
+    Returns a deterministic transverse basis vector for a wave interacting
+    with a surface.
+
+    Away from normal incidence, the transverse electric direction is
+    :math:`\hat{\mathbf{k}}\times\hat{\mathbf{n}}`. At normal or near-normal
+    incidence, this cross product is degenerate, and an arbitrary deterministic
+    vector orthogonal to ``k`` is used instead.
+
+    :param k: Direction of propagation as a unit vector
+    :param normal: Surface normal as a unit vector
+    :returns: A unit vector orthogonal to ``k``
+    """
+
+    basis = dr.cross(k, normal)
+    degenerate = dr.squared_norm(basis) < 1e-12
+
+    # Project a deterministic Cartesian axis onto the plane transverse to k.
+    # Selecting y when k is close to x keeps the projection well-conditioned.
+    reference = dr.select(dr.abs(k.x) < 0.9,
+                          mi.Vector3f(1., 0., 0.),
+                          mi.Vector3f(0., 1., 0.))
+    fallback = reference - dr.dot(reference, k)*k
+    basis = dr.select(degenerate, fallback, basis)
+    return dr.normalize(basis)
+
 
 def jones_matrix_rotator(
     k: mi.Vector3f,
@@ -194,16 +232,9 @@ def jones_matrix_to_world_implicit(
     :param k_out_local: Direction of propagation of the scattered wave in the local frame as a unit vector
     """
 
-    # TE directions
-    # Normal is always [0, 0, 1], i.e., z+, in the local frame
-    # We need to handle the case of normal incidence, i.e., were k_in_local
-    # is parallel to the normal
-    normal_incidence = isclose(k_in_local.z, mi.Float(-1.))
-    si_target_local = mi.Vector3f(k_in_local.y, -k_in_local.x, 0.)
-    si_target_local = dr.normalize(si_target_local)
-    si_target_local = dr.select(normal_incidence,
-                                mi.Vector3f(1., 0., 0.),
-                                si_target_local)
+    # TE direction. The normal is always z+ in the local frame.
+    si_target_local = transverse_basis_from_normal(
+        k_in_local, mi.Vector3f(0., 0., 1.))
     so_current_local = si_target_local
 
     k_in_world = to_world @ k_in_local
@@ -266,7 +297,7 @@ def jones_vec_dot(u: mi.Vector4f, v: mi.Vector4f) -> mi.Complex2f:
         a = \mathbf{u}^\textsf{H} \mathbf{v}\\
           = \left( \Re\{\mathbf{u}\}^\textsf{T} \Re\{\mathbf{v}\}\\
           + \Im\{\mathbf{u}\}^\textsf{T} \Im\{\mathbf{v}\} \right)\\
-          + j\left( \Re\{\mathbf{u})^\textsf{T} \Im\{\mathbf{v}\}\\
+          + j\left( \Re\{\mathbf{u}\}^\textsf{T} \Im\{\mathbf{v}\}\\
           - \Im\{\mathbf{u}\}^\textsf{T} \Re\{\mathbf{v}\} \right)
         \end{multline}
 

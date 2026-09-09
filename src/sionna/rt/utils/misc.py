@@ -36,7 +36,10 @@ def isclose(
     if:
 
     .. math::
-        |\texttt{a}[i] - \texttt{b}[i]| < \texttt{atol} + \texttt{rtol} \cdot \texttt{b}[i]
+        |\texttt{a}[i] - \texttt{b}[i]| < \texttt{atol} + \texttt{rtol} \cdot |\texttt{b}[i]|
+
+    Elements corresponding to infinite ``b`` or to NaN in ``a`` or ``b`` are
+    always `False`.
 
     :param a: First input array to compare
     :param b: Second input array to compare
@@ -62,7 +65,7 @@ def sinc(x: mi.Float) -> mi.Float:
     Evaluates the normalized sinc function
 
     The sinc function is defined as :math:`\sin(\pi x)/(\pi x)`
-    for any :math:`x \neq 0` and equals :math:`0` for :math:`x=0`.
+    for any :math:`x \neq 0` and equals :math:`1` for :math:`x=0`.
     """
     x = dr.pi*x
     return dr.select(x==0, 1, dr.sin(x)*dr.rcp(x))
@@ -137,14 +140,14 @@ def subcarrier_frequencies(num_subcarriers: int,
                            subcarrier_spacing: float) -> mi.Float:
     # pylint: disable=line-too-long
     r"""
-    Compute the baseband frequencies of ``num_subcarrier`` subcarriers spaced by
+    Compute the baseband frequencies of ``num_subcarriers`` subcarriers spaced by
     ``subcarrier_spacing``, i.e.,
 
-    >>> # If num_subcarrier is even:
-    >>> frequencies = [-num_subcarrier/2, ..., 0, ..., num_subcarrier/2-1] * subcarrier_spacing
+    >>> # If num_subcarriers is even:
+    >>> frequencies = [-num_subcarriers/2, ..., 0, ..., num_subcarriers/2-1] * subcarrier_spacing
     >>>
-    >>> # If num_subcarrier is odd:
-    >>> frequencies = [-(num_subcarrier-1)/2, ..., 0, ..., (num_subcarrier-1)/2] * subcarrier_spacing
+    >>> # If num_subcarriers is odd:
+    >>> frequencies = [-(num_subcarriers-1)/2, ..., 0, ..., (num_subcarriers-1)/2] * subcarrier_spacing
 
     :param num_subcarriers: Number of subcarriers
 
@@ -187,9 +190,11 @@ def cot(x: mi.Float) -> mi.Float:
     r"""
     Computes the cotangent of ``x``
 
+    This is the mathematical cotangent :math:`1/\tan(x)`. Poles where
+    :math:`\tan(x)=0` evaluate to IEEE infinities. For the UTD product
+    :math:`\cot(\psi)F(x)`, which remains finite at those poles, use
+    :func:`~sionna.rt.utils.cot_times_f_utd` instead.
+
     :param x: Input value
     """
-    y = dr.rcp(dr.tan(x))
-    y = dr.select(dr.isnan(y), 0, y)
-    y = dr.select(dr.isinf(y), 0, y)
-    return y
+    return dr.rcp(dr.tan(x))

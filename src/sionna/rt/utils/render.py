@@ -49,7 +49,8 @@ def make_render_sensor(
     resolution: tuple[int, int],
     fov: float | None,
 ) -> mi.Sensor:
-    r"""
+    # pylint: disable=line-too-long
+    """
     Instantiates a Mitsuba sensor (camera) from the provided ``camera`` object.
 
     Input
@@ -57,9 +58,17 @@ def make_render_sensor(
     scene: :class:`~sionna.rt.Scene`
         The scene
 
-    camera: str | :class:`~sionna.rt.Camera` | :class:`~mitsuba.Sensor`
-        The name of a camera registered in the scene, or a camera object
-        instance, or a "camera to world" transform matrix.
+    camera: str | :class:`~sionna.rt.Camera` | :class:`~mitsuba.Sensor` | :class:`~mitsuba.ScalarTransform4f`
+        Viewpoint used for rendering. Supported values are:
+
+        * ``"preview"`` — reuse the camera of an open
+          :meth:`~sionna.rt.Scene.preview` widget
+        * a :class:`~sionna.rt.Camera` instance
+        * a Mitsuba sensor
+        * a camera-to-world transform matrix
+
+        Note that :class:`~sionna.rt.Scene` does not keep a registry of named
+        cameras; string names other than ``"preview"`` are not supported.
 
     resolution: [2], int
         Size of the rendered figure.
@@ -97,7 +106,7 @@ def make_render_sensor(
             )
             props['near_clip'] = cam.near
             props['far_clip'] = cam.far
-            # This will get overriden below if the user provided an `fov` value.
+            # This will get overridden below if the user provided an `fov` value
             props['fov'] = cam.fov
             props['fov_axis'] = 'y'
             del w, cam
@@ -158,8 +167,9 @@ def paths_to_segments(paths: rt.Paths):
 
     Output
     -------
-    starts, ends: [n,3], float
-        Endpoints of the segments making the paths.
+    starts, ends, colors: list
+        Endpoints and colors of the segments making the paths.
+        Empty lists are returned when ``paths`` contains no path.
     """
 
     vertices = paths.vertices.numpy()
@@ -169,7 +179,7 @@ def paths_to_segments(paths: rt.Paths):
 
     num_paths = vertices.shape[-2]
     if num_paths == 0:
-        return # Nothing to do
+        return [], [], []
 
     # Build sources and targets
     src_positions, tgt_positions = paths.sources, paths.targets
@@ -293,7 +303,8 @@ def twosided_diffuse(color: mi.Color3f | list[float]) -> mi.BSDF:
     })
 
 
-def radio_map_to_emissive_shape(radio_map: rt.RadioMap, tx: int | None,
+def radio_map_to_emissive_shape(radio_map: rt.RadioMap,
+                                tx: int | str | None,
                                 db_scale: bool = True,
                                 rm_cmap: str | callable | None = None,
                                 vmin: float | None = None,

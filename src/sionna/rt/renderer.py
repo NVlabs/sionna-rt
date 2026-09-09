@@ -10,7 +10,7 @@ import drjit as dr
 import mitsuba as mi
 import numpy as np
 
-from  sionna import rt
+from sionna import rt
 from .utils import make_render_sensor, paths_to_segments, unmultiply_alpha, \
                    twosided_diffuse, radio_map_to_emissive_shape, \
                    scoped_set_log_level, scene_scale, clone_mesh, \
@@ -88,7 +88,7 @@ def render(scene: rt.Scene,
         the same interface as a Matplotlib colormap.
         Defaults to `None`.
 
-    rm_vmin, rm_vmax: floot | None
+    rm_vmin, rm_vmax: float | None
         For coverage map visualization, defines the range of path gains that
         the colormap covers.
         If set to None, then covers the complete range.
@@ -137,12 +137,15 @@ def render(scene: rt.Scene,
         Rendered image
     """
     # Use an RGB variant matching the current backend.
-    rendering_variant = ("cuda_ad_rgb"
-                         if dr.backend_v(mi.Float) == dr.JitBackend.CUDA
-                         else "llvm_ad_rgb")
+    if dr.backend_v(mi.Float) == dr.JitBackend.CUDA:
+        rendering_variant = "cuda_ad_rgb"
+    elif dr.backend_v(mi.Float) == dr.JitBackend.Metal:
+        rendering_variant = "metal_ad_rgb"
+    else:
+        rendering_variant = "llvm_ad_rgb"
 
-    with mi.util.scoped_set_variant(rendering_variant,
-                                    "cuda_ad_rgb", "llvm_ad_rgb"):
+    with mi.util.scoped_set_variant(rendering_variant, "cuda_ad_rgb",
+                                    "metal_ad_rgb", "llvm_ad_rgb"):
         # 1. Prepare the scene for rendering in the visual domain.
         # For now, we perform this conversion from scratch at every call because
         # it would be difficult to track all possible changes to keep
@@ -230,7 +233,7 @@ def render(scene: rt.Scene,
         if rm_is_part_of_scene:
             # Since the measurement surface is being rendered as part of both
             # the base and overlay scenes, we add a small threshold to make
-            # sure the radio map from the overly is preferred.
+            # sure the radio map from the overlay is preferred.
             prefer_overlay |= np.abs(depth1 - depth2) < 0.01 * np.abs(depth1)
 
         result = np.where(
@@ -314,7 +317,8 @@ def visual_scene_from_wireless_scene(scene: rt.Scene,
 
     # --- Shapes (copied from the original scene)
     for i, sh in enumerate(scene.mi_scene.shapes()):
-        assert sh.is_mesh()
+        if not sh.is_mesh():
+            raise TypeError('Only triangle meshes are supported')
         if exclude_mesh_ids and sh.id() in exclude_mesh_ids:
             continue
 
@@ -362,7 +366,10 @@ def get_overlay_scene(scene: rt.Scene, sensor: mi.Sensor, paths: any | None = No
             else:
                 display_radius = radius
 
-            assert key not in result
+            if key in result:
+                raise ValueError(
+                    f"Duplicate overlay key '{key}' while building the"
+                    " render overlay scene")
             rd_pos = rd.position.numpy().squeeze()
             result[key] = {
                 'type': 'sphere',

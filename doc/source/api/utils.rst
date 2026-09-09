@@ -29,6 +29,7 @@ Geometry
 .. autofunction:: sionna.rt.utils.r_hat
 .. autofunction:: sionna.rt.utils.theta_phi_from_unit_vec
 .. autofunction:: sionna.rt.utils.rotation_matrix
+.. autofunction:: sionna.rt.utils.look_at_orientation
 
 Jones calculus
 --------------

@@ -13,8 +13,8 @@ from .paths_buffer import PathsBuffer
 from sionna.rt.constants import InteractionType, INVALID_SHAPE,\
     INVALID_PRIMITIVE
 from sionna.rt import Scene
-from sionna.rt.utils import cpx_mul, cpx_abs_square, r_hat, sinc, cpx_convert,\
-    map_angle_to_canonical_range
+from sionna.rt.utils import cpx_mul, cpx_abs_square, sinc, cpx_convert,\
+    map_angle_to_canonical_range, theta_phi_from_unit_vec
 
 class Paths:
     # pylint: disable=line-too-long
@@ -26,16 +26,6 @@ class Paths:
     Paths are generated for the loaded scene using a path solver, such as
     :class:`~sionna.rt.PathSolver`. Please refer to the documentation of this
     class for further details.
-
-    :param scene: Scene for which paths are computed
-    :param src_positions: Positions of the sources
-    :param tgt_positions: Positions of the targets
-    :param tx_velocities: Velocities of the transmitters
-    :param rx_velocities: Velocities of the receivers
-    :param synthetic_array: If set to `True`, then the antenna arrays are applied synthetically
-    :param paths_buffer: Paths buffer storing the computed paths
-    :param rel_ant_positions_tx: Positions of the array elements with respect to the center of the transmitters. Only required if synthetic arrays are used.
-    :param rel_ant_positions_rx: Positions of the array elements with respect to the center of the receivers. Only required if synthetic arrays are used.
     """
 
     def __init__(self,
@@ -48,6 +38,7 @@ class Paths:
                  paths_buffer: PathsBuffer,
                  rel_ant_positions_tx: mi.Point3f | None,
                  rel_ant_positions_rx: mi.Point3f | None):
+        # Internal constructor. Users obtain instances from a path solver.
 
         self._paths_buffer = paths_buffer
 
@@ -59,7 +50,7 @@ class Paths:
         self._tx_velocities = tx_velocities
         self._rx_velocities = rx_velocities
 
-        # Referencess to the transmitter and receiver arrays
+        # References to the transmitter and receiver arrays
         self._tx_array = scene.tx_array
         self._rx_array = scene.rx_array
 
@@ -136,7 +127,7 @@ class Paths:
         # Builds tensors from the paths buffer
         self._build_from_buffer()
 
-        # Apply synthetic arrat if required
+        # Apply synthetic array if required
         if self._synthetic_array:
             self._apply_synthetic_array(rel_ant_positions_tx,
                                         rel_ant_positions_rx)
@@ -216,7 +207,7 @@ class Paths:
         """
         Flags indicating valid paths
 
-        :type: :py:class:`mi.TensorXb [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]`
+        :type: ``mi.TensorXb [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]``
         """
         return self._valid
 
@@ -226,7 +217,7 @@ class Paths:
         r"""
         Real and imaginary components of the channel coefficients [unitless, linear scale]
 
-        :type: :py:class:`Tuple[mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths], mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]]`
+        :type: ``Tuple[mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths], mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]]``
         """
         return self._a_real, self._a_imag
 
@@ -236,7 +227,7 @@ class Paths:
         """
         Paths delays [s]
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._tau
 
@@ -244,9 +235,9 @@ class Paths:
     def theta_t(self):
         # pylint: disable=line-too-long
         """
-        Zenith  angles of departure [rad]
+        Zenith angles of departure [rad]
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._theta_t
 
@@ -254,9 +245,9 @@ class Paths:
     def phi_t(self):
         # pylint: disable=line-too-long
         """
-        Azimuth  angles of departure [rad]
+        Azimuth angles of departure [rad]
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._phi_t
 
@@ -264,9 +255,9 @@ class Paths:
     def theta_r(self):
         # pylint: disable=line-too-long
         """
-        Zenith  angles of arrival [rad]
+        Zenith angles of arrival [rad]
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._theta_r
 
@@ -274,9 +265,9 @@ class Paths:
     def phi_r(self):
         # pylint: disable=line-too-long
         """
-        Azimuth  angles of arrival [rad]
+        Azimuth angles of arrival [rad]
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._phi_r
 
@@ -287,7 +278,7 @@ class Paths:
         Interaction type represented using
         :class:`~sionna.rt.constants.InteractionType`
 
-        :type: :py:class:`mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]``
         """
         if not self._paths_components_built:
             self._build_paths_components()
@@ -300,7 +291,7 @@ class Paths:
         IDs of the intersected objects. Invalid objects are represented by
         :data:`~sionna.rt.constants.INVALID_SHAPE`.
 
-        :type: :py:class:`mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]``
         """
         if not self._paths_components_built:
             self._build_paths_components()
@@ -313,7 +304,7 @@ class Paths:
         Indices of the intersected primitives. Invalid primitives are
         represented by :data:`~sionna.rt.constants.INVALID_PRIMITIVE`.
 
-        :type: :py:class:`mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]`
+        :type: ``mi.TensorXu [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [max_depth, num_rx, num_tx, num_paths]``
         """
         if not self._paths_components_built:
             self._build_paths_components()
@@ -326,7 +317,7 @@ class Paths:
         Paths' vertices, i.e., the interaction points of the paths with the
         scene
 
-        :type: :py:class:`mi.TensorXf [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, 3] or [max_depth, num_rx, num_tx, num_paths, 3]`
+        :type: ``mi.TensorXf [max_depth, num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths, 3] or [max_depth, num_rx, num_tx, num_paths, 3]``
         """
         if not self._paths_components_built:
             self._build_paths_components()
@@ -380,7 +371,7 @@ class Paths:
 
             f_\Delta = \frac{1}{\lambda}\left(\mathbf{v}_{0}^\mathsf{T}\hat{\mathbf{k}}_0 - \mathbf{v}_{n+1}^\mathsf{T}\hat{\mathbf{k}}_n + \sum_{i=1}^n \mathbf{v}_{i}^\mathsf{T}\left(\hat{\mathbf{k}}_i-\hat{\mathbf{k}}_{i-1} \right) \right) \qquad \text{[Hz]}.
 
-        :type: :py:class:`mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]`:
+        :type: ``mi.TensorXf [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._doppler
 
@@ -425,7 +416,7 @@ class Paths:
         :param out_type: Name of the desired output type.
             Currently supported are
             `Dr.Jit <https://drjit.readthedocs.io/en/latest/reference.html>`_
-            ("drjit), `Numpy <https://numpy.org>`_ ("numpy"),
+            ("drjit"), `Numpy <https://numpy.org>`_ ("numpy"),
             `Jax <https://jax.readthedocs.io/en/latest/index.html>`_ ("jax"),
             `TensorFlow <https://www.tensorflow.org>`_ ("tf"),
             and `PyTorch <https://pytorch.org>`_ ("torch").
@@ -435,25 +426,26 @@ class Paths:
             coefficients :math:`a^{\text{b}}_{i}`
         :return type: Shape: [num_rx, num_rx_ant, num_tx,
             num_tx_ant, num_paths, num_time_steps],
-            Type: :py:class:`Tuple[mi.TensorXf, mi.TensorXf]`
-            | :py:class:`np.array` | :py:class:`jax.array`
-            | :py:class:`tf.Tensor` | :py:class:`torch.tensor`
+            Type: ``Tuple[mi.TensorXf, mi.TensorXf]``
+            | ``numpy.ndarray`` | ``jax.Array``
+            | ``tf.Tensor`` | ``torch.Tensor``
 
         :return: Paths delays :math:`\tau_{i}` [s]
         :return type: Shape: [num_rx, num_rx_ant, num_tx,
             num_tx_ant, num_paths] or [num_rx, num_tx, num_paths],
-            Type: :py:class:`mi.TensorXf`
-            | :py:class:`np.array` | :py:class:`jax.array`
-            | :py:class:`tf.Tensor` | :py:class:`torch.tensor`
+            Type: ``mi.TensorXf``
+            | ``numpy.ndarray`` | ``jax.Array``
+            | ``tf.Tensor`` | ``torch.Tensor``
         """
 
-        # Reverse direction if requited
+        # Reverse direction if required
         if reverse_direction:
             a = self._reverse_direction(self.a)
-            tau, = self._reverse_direction((self.tau,))
+            tau, doppler = self._reverse_direction((self.tau, self.doppler))
         else:
             a = dr.copy(self.a)
             tau = dr.copy(self.tau)
+            doppler = dr.copy(self.doppler)
 
         # If no paths, then return immediately
         if tau.shape[-1] == 0:
@@ -476,7 +468,7 @@ class Paths:
                 num_rx, num_tx = min_tau.shape
                 min_tau = dr.reshape(mi.TensorXf, min_tau,
                                      shape=[num_rx, 1, num_tx, 1, 1])
-            # Apply delay normalizaztion
+            # Apply delay normalization
             tau -= min_tau
 
             # Set delays of invalid paths to -1
@@ -503,7 +495,6 @@ class Paths:
 
         # Apply Doppler phase shifts
         if num_time_steps > 1:
-            doppler = self.doppler
             # Reshape the Doppler shift tensor to fit `a`
             if self.synthetic_array:
                 doppler = dr.reshape(mi.TensorXf, doppler, reshape_to + [1])
@@ -547,15 +538,13 @@ class Paths:
 
         .. math::
             \bar{h}_{n, \ell}
-            = \sum_{i=0}^{M-1} a_{i}^\text{b}\left(\frac{n}{W}\right)
+            = \sum_{i=0}^{M-1} a_{i}^\text{b}\left(\frac{n}{f_s}\right)
                 \text{sinc}\left( \ell - W\tau_{i} \right)
 
-        for :math:`\ell` ranging from ``l_min`` to ``l_max``, and where :math:`W` is
-        the ``bandwidth``.
-
-        This function allows for an arbitrary ``sampling_frequency`` at which
-        the channel taps are sampled. By default, it is equal to the
-        ``bandwidth``.
+        for :math:`\ell` ranging from ``l_min`` to ``l_max``, where :math:`W` is
+        the ``bandwidth`` and :math:`f_s` is the ``sampling_frequency``.
+        By default, ``sampling_frequency`` equals ``bandwidth``, in which case
+        :math:`f_s = W`.
 
         :param bandwidth: Bandwidth [Hz] to which the channel impulse response
             will be limited
@@ -585,7 +574,7 @@ class Paths:
         :param out_type: Name of the desired output type.
             Currently supported are
             `Dr.Jit <https://drjit.readthedocs.io/en/latest/reference.html>`_
-            ("drjit), `Numpy <https://numpy.org>`_ ("numpy"),
+            ("drjit"), `Numpy <https://numpy.org>`_ ("numpy"),
             `Jax <https://jax.readthedocs.io/en/latest/index.html>`_ ("jax"),
             `TensorFlow <https://www.tensorflow.org>`_ ("tf"),
             and `PyTorch <https://pytorch.org>`_ ("torch").
@@ -593,9 +582,9 @@ class Paths:
         :return: Channel tap coefficients
         :return type: Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant,
             num_time_steps, l_max - l_min + 1],
-            Type: :py:class:`Tuple[mi.TensorXf, mi.TensorXf]`
-            | :py:class:`np.array` | :py:class:`jax.array`
-            | :py:class:`tf.Tensor` | :py:class:`torch.tensor`
+            Type: ``Tuple[mi.TensorXf, mi.TensorXf]``
+            | ``numpy.ndarray`` | ``jax.Array``
+            | ``tf.Tensor`` | ``torch.Tensor``
         """
 
         # Get complex baseband equivalent CIR
@@ -704,19 +693,19 @@ class Paths:
         :param out_type: Name of the desired output type.
             Currently supported are
             `Dr.Jit <https://drjit.readthedocs.io/en/latest/reference.html>`_
-            ("drjit), `Numpy <https://numpy.org>`_ ("numpy"),
+            ("drjit"), `Numpy <https://numpy.org>`_ ("numpy"),
             `Jax <https://jax.readthedocs.io/en/latest/index.html>`_ ("jax"),
             `TensorFlow <https://www.tensorflow.org>`_ ("tf"),
             and `PyTorch <https://pytorch.org>`_ ("torch").
 
-        :return: Real and imaginary components of the baseband equivalent channel
-            coefficients :math:`a^{\text{b}}_{i}`
+        :return: Real and imaginary components of the channel frequency
+            response :math:`\widehat{h}(f, t)`
 
         :return type: Shape: [num_rx, num_rx_ant, num_tx, num_tx_ant,
             num_time_steps, num_frequencies],
-            Type: :py:class:`Tuple[mi.TensorXf`
-            | :py:class:`np.array` | :py:class:`jax.array`
-            | :py:class:`tf.Tensor` | :py:class:`torch.tensor`
+            Type: ``Tuple[mi.TensorXf, mi.TensorXf]``
+            | ``numpy.ndarray`` | ``jax.Array``
+            | ``tf.Tensor`` | ``torch.Tensor``
         """
 
         frequencies = mi.Float(frequencies)
@@ -761,10 +750,12 @@ class Paths:
 
         # Normalize
         if normalize:
-            c = dr.rcp(dr.sqrt(dr.mean(cpx_abs_square(h_f), axis=(1,3,4,5))))
+            # Per-link average energy across antennas, time, and frequencies.
+            # Zero-energy links must stay zero (avoid 0 * inf = NaN).
+            c = dr.mean(cpx_abs_square(h_f), axis=(1, 3, 4, 5))
             num_rx, num_tx = c.shape
             c = dr.reshape(mi.TensorXf, c, [num_rx, 1, num_tx, 1, 1, 1])
-            h_f = [h*c for h in h_f]
+            h_f = [dr.select(c == 0, 0, h * dr.rsqrt(c)) for h in h_f]
 
         if out_type == "drjit":
             return h_f
@@ -773,6 +764,24 @@ class Paths:
     ###########################################
     # Internal methods
     ###########################################
+
+    @staticmethod
+    def _k_component(k: mi.TensorXf, component: int) -> mi.Float:
+        r"""
+        Extracts one component of a tensor of direction vectors
+
+        ``k`` is assumed to store the (x,y,z) components along its last
+        dimension, i.e., interleaved in its flat array.
+
+        :param k: Tensor of direction vectors with a trailing dimension of 3
+        :param component: Index of the component to extract (0, 1, or 2)
+
+        :return: Requested component
+        """
+
+        num_items = dr.width(k.array) // 3
+        ind = dr.arange(mi.UInt, num_items)*3 + component
+        return dr.gather(mi.Float, k.array, ind)
 
     def _build_from_buffer(self) -> None:
         r"""
@@ -860,6 +869,18 @@ class Paths:
         theta_r = dr.zeros(mi.TensorXf, tensor_shape)
         phi_r = dr.zeros(mi.TensorXf, tensor_shape)
         doppler = dr.zeros(mi.TensorXf, tensor_shape)
+        # `k_rx` follows the same convention as the angles of arrival, i.e., it
+        # points opposite to the direction of propagation of the incident wave.
+        # An extra dimension is required for the (x,y,z) components.
+        k_tx = dr.zeros(mi.TensorXf, tensor_shape + [3])
+        k_rx = dr.zeros(mi.TensorXf, tensor_shape + [3])
+
+        # The angles of departure and arrival are derived from the directions
+        # stored in the buffer, which are the primitive quantities
+        k_tx_ = paths_buffer.k_tx
+        k_rx_ = paths_buffer.k_rx
+        theta_t_, phi_t_ = theta_phi_from_unit_vec(k_tx_)
+        theta_r_, phi_r_ = theta_phi_from_unit_vec(k_rx_)
 
         # Finalize Doppler shift computation by applying the shift due to
         # transmitter and receiver mobility
@@ -877,11 +898,19 @@ class Paths:
                 #
                 dr.scatter(tau.array, paths_buffer.tau, scat_ind__)
                 #
-                dr.scatter(theta_t.array, paths_buffer.theta_t, scat_ind__)
-                dr.scatter(phi_t.array, paths_buffer.phi_t, scat_ind__)
+                dr.scatter(theta_t.array, theta_t_, scat_ind__)
+                dr.scatter(phi_t.array, phi_t_, scat_ind__)
                 #
-                dr.scatter(theta_r.array, paths_buffer.theta_r, scat_ind__)
-                dr.scatter(phi_r.array, paths_buffer.phi_r, scat_ind__)
+                dr.scatter(theta_r.array, theta_r_, scat_ind__)
+                dr.scatter(phi_r.array, phi_r_, scat_ind__)
+                #
+                dr.scatter(k_tx.array, k_tx_.x, scat_ind__*3)
+                dr.scatter(k_tx.array, k_tx_.y, scat_ind__*3 + 1)
+                dr.scatter(k_tx.array, k_tx_.z, scat_ind__*3 + 2)
+                #
+                dr.scatter(k_rx.array, k_rx_.x, scat_ind__*3)
+                dr.scatter(k_rx.array, k_rx_.y, scat_ind__*3 + 1)
+                dr.scatter(k_rx.array, k_rx_.z, scat_ind__*3 + 2)
                 #
                 dr.scatter(doppler.array, doppler_, scat_ind__)
 
@@ -893,6 +922,8 @@ class Paths:
         self._phi_t = phi_t
         self._theta_r = theta_r
         self._phi_r = phi_r
+        self._k_tx = k_tx
+        self._k_rx = k_rx
         self._doppler = doppler
 
     def _apply_synthetic_array(self,
@@ -924,14 +955,13 @@ class Paths:
         a_imag = self._a_imag
 
         # Directions of arrival and departures
+        # The components are read directly from the stored direction vectors,
+        # as reconstructing them from the angles is ill-conditioned near the
+        # poles.
         # [num_rx, num_tx, max_num_paths]
-        theta_t, phi_t = self._theta_t, self._phi_t
-        # [num_tx, num_tx, max_num_paths, 3]
-        sin_phi_t, cos_phi_t = dr.sincos(phi_t)
-        sin_theta_t, cos_theta_t = dr.sincos(theta_t)
-        k_tx_x = sin_theta_t*cos_phi_t
-        k_tx_y = sin_theta_t*sin_phi_t
-        k_tx_z = cos_theta_t
+        k_tx_x = self._k_component(self._k_tx, 0)
+        k_tx_y = self._k_component(self._k_tx, 1)
+        k_tx_z = self._k_component(self._k_tx, 2)
         # Expand for broadcasting
         k_tx_x = dr.reshape(mi.TensorXf, k_tx_x,
                             [num_rx, 1, 1, num_tx, 1, 1, max_num_paths])
@@ -940,13 +970,9 @@ class Paths:
         k_tx_z = dr.reshape(mi.TensorXf, k_tx_z,
                             [num_rx, 1, 1, num_tx, 1, 1, max_num_paths])
         # [num_rx, num_tx, max_num_paths]
-        theta_r, phi_r = self._theta_r, self._phi_r
-        # [num_tx, num_tx, max_num_paths, 3]
-        sin_phi_r, cos_phi_r = dr.sincos(phi_r)
-        sin_theta_r, cos_theta_r = dr.sincos(theta_r)
-        k_rx_x = sin_theta_r*cos_phi_r
-        k_rx_y = sin_theta_r*sin_phi_r
-        k_rx_z = cos_theta_r
+        k_rx_x = self._k_component(self._k_rx, 0)
+        k_rx_y = self._k_component(self._k_rx, 1)
+        k_rx_z = self._k_component(self._k_rx, 2)
         # Expand for broadcasting
         k_rx_x = dr.reshape(mi.TensorXf, k_rx_x,
                             [num_rx, 1, 1, num_tx, 1, 1, max_num_paths])
@@ -1001,7 +1027,7 @@ class Paths:
 
     def _fuse_pattern_array_dims(self) -> None:
         r"""
-        Merges the pattern and array dimentions of the tensors storing the
+        Merges the pattern and array dimensions of the tensors storing the
         channel coefficients
         """
 
@@ -1044,6 +1070,14 @@ class Paths:
                                   [num_rx, num_rx_patterns*num_rx_ant,
                                    num_tx, num_tx_patterns*num_tx_ant,
                                    max_num_paths])
+            self._k_tx = dr.reshape(mi.TensorXf, self._k_tx,
+                                  [num_rx, num_rx_patterns*num_rx_ant,
+                                   num_tx, num_tx_patterns*num_tx_ant,
+                                   max_num_paths, 3])
+            self._k_rx = dr.reshape(mi.TensorXf, self._k_rx,
+                                  [num_rx, num_rx_patterns*num_rx_ant,
+                                   num_tx, num_tx_patterns*num_tx_ant,
+                                   max_num_paths, 3])
             self._doppler = dr.reshape(mi.TensorXf, self._doppler,
                                   [num_rx, num_rx_patterns*num_rx_ant,
                                    num_tx, num_tx_patterns*num_tx_ant,
@@ -1059,16 +1093,15 @@ class Paths:
         num_tx = self._num_tx
         num_rx = self._num_rx
         num_tx_ant = self._tx_array.num_ant
-        tx_array_size = self._tx_array.array_size
         num_rx_ant = self._rx_array.num_ant
-        rx_array_size = self._rx_array.array_size
 
+        # Fused antenna dimensions (array size x polarization patterns)
         a_tensor_base_shape = [num_rx, num_rx_ant, num_tx, num_tx_ant, 0]
         if self._synthetic_array:
             other_tensor_base_shape = [num_rx, num_tx, 0]
         else:
-            other_tensor_base_shape = [num_rx, rx_array_size, num_tx,
-                                       tx_array_size, 0]
+            # Same fused antenna axes as ``a`` / non-empty non-synthetic paths
+            other_tensor_base_shape = a_tensor_base_shape
 
         self._valid = dr.full(mi.TensorXb, False, other_tensor_base_shape)
         self._a_real = dr.zeros(mi.TensorXf, a_tensor_base_shape)
@@ -1078,6 +1111,8 @@ class Paths:
         self._phi_t = dr.zeros(mi.TensorXf, other_tensor_base_shape)
         self._theta_r = dr.zeros(mi.TensorXf, other_tensor_base_shape)
         self._phi_r = dr.zeros(mi.TensorXf, other_tensor_base_shape)
+        self._k_tx = dr.zeros(mi.TensorXf, other_tensor_base_shape + [3])
+        self._k_rx = dr.zeros(mi.TensorXf, other_tensor_base_shape + [3])
         self._doppler = dr.zeros(mi.TensorXf, other_tensor_base_shape)
         #
         self._interactions = dr.full(mi.TensorXu, InteractionType.NONE,
@@ -1227,17 +1262,18 @@ class Paths:
         # Doppler shift due to transmitters mobility
 
         # Paths direction of departure
-        k_tx = r_hat(paths_buffer.theta_t, paths_buffer.phi_t)
-        # Transmitters velocities
+        k_tx = paths_buffer.k_tx
+        # Transmitter velocities
         v_tx = dr.gather(mi.Vector3f, self._tx_velocities, tx_ind)
         # Doppler shift [Hz]
         tx_doppler = dr.dot(k_tx, v_tx)/self._wavelength
 
         # Doppler shift due to receivers mobility
 
-        # Paths direction of departure
-        k_rx = -r_hat(paths_buffer.theta_r, paths_buffer.phi_r)
-        # Transmitters velocities
+        # Paths direction of arrival, flipped to point along the direction of
+        # propagation of the incident wave
+        k_rx = -paths_buffer.k_rx
+        # Receiver velocities
         v_rx = dr.gather(mi.Vector3f, self._rx_velocities, rx_ind)
         # Doppler shift [Hz]
         rx_doppler = dr.dot(k_rx, v_rx)/self._wavelength

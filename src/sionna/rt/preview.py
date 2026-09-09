@@ -38,7 +38,7 @@ class Previewer:
 
     fov: float
         Field of view, in degrees.
-        Defautls to 45 degrees.
+        Defaults to 45 degrees.
 
     background: str
         Background color in hex format prefixed by '#'.
@@ -551,7 +551,7 @@ class Previewer:
 
             albedos.append(np.tile(albedo, (n_vertices, 1)))
 
-        # Plot all objects as a single PyThreeJS mesh, which is must faster
+        # Plot all objects as a single PyThreeJS mesh, which is much faster
         # than creating individual mesh objects in large scenes.
         vertices = np.concatenate(vertices, axis=0)
         faces = np.concatenate(faces, axis=0)
@@ -808,8 +808,10 @@ class Previewer:
             Colors of the vertices. If `None`, black is used.
             Defaults to `None`.
         """
-        assert vertices.ndim == 2 and vertices.shape[1] == 3
-        assert faces.ndim == 2 and faces.shape[1] == 3
+        if not (vertices.ndim == 2 and vertices.shape[1] == 3):
+            raise ValueError("`vertices` must have shape [n, 3]")
+        if not (faces.ndim == 2 and faces.shape[1] == 3):
+            raise ValueError("`faces` must have shape [n, 3]")
         n_v = vertices.shape[0]
         pmin, pmax = np.min(vertices, axis=0), np.max(vertices, axis=0)
 
@@ -820,9 +822,11 @@ class Previewer:
         elif colors.ndim == 1:
             colors = np.tile(colors[None, :], (n_v, 1))
         colors = colors.astype(np.float32)
-        assert ( (colors.ndim == 2)
-             and (colors.shape[1] == 3)
-             and (colors.shape[0] == n_v) )
+        if not ((colors.ndim == 2)
+                and (colors.shape[1] == 3)
+                and (colors.shape[0] == n_v)):
+            raise ValueError(
+                "`colors` must have shape [n, 3] matching `vertices`")
 
         # Closer match to Mitsuba and Blender
         colors = np.power(colors, 1/1.8)
@@ -863,7 +867,8 @@ class Previewer:
         radius: float
             Radius of the points.
         """
-        assert points.ndim == 2 and points.shape[1] == 3
+        if not (points.ndim == 2 and points.shape[1] == 3):
+            raise ValueError("`points` must have shape [n, 3]")
         n = points.shape[0]
         pmin, pmax = np.min(points, axis=0), np.max(points, axis=0)
 
@@ -873,9 +878,11 @@ class Previewer:
         elif colors.ndim == 1:
             colors = np.tile(colors[None, :], (n, 1))
         colors = colors.astype(np.float32)
-        assert ( (colors.ndim == 2)
-             and (colors.shape[1] == 3)
-             and (colors.shape[0] == n) )
+        if not ((colors.ndim == 2)
+                and (colors.shape[1] == 3)
+                and (colors.shape[0] == n)):
+            raise ValueError(
+                "`colors` must have shape [n, 3] matching `points`")
 
         tex = p3s.DataTexture(data=self._get_disk_sprite(), format="RGBAFormat",
                               type="FloatType")
@@ -985,9 +992,12 @@ class Previewer:
             Width of the lines.
         """
 
-        assert starts.ndim == 2 and starts.shape[1] == 3
-        assert ends.ndim == 2 and ends.shape[1] == 3
-        assert starts.shape[0] == ends.shape[0]
+        if not (starts.ndim == 2 and starts.shape[1] == 3):
+            raise ValueError("`starts` must have shape [n, 3]")
+        if not (ends.ndim == 2 and ends.shape[1] == 3):
+            raise ValueError("`ends` must have shape [n, 3]")
+        if starts.shape[0] != ends.shape[0]:
+            raise ValueError("`starts` and `ends` must have the same length")
 
         segments = np.hstack((starts, ends)).astype(np.float32).reshape(-1,2,3)
         pmin = np.min(segments, axis=(0, 1))
@@ -999,7 +1009,7 @@ class Previewer:
         mesh = p3s.LineSegments2(geo, mat)
 
         # Lines are not flagged as persistent as they correspond to paths, which
-        # can changes from one display to the next.
+        # can change from one display to the next.
         self._add_child(mesh, pmin, pmax, persist=False)
 
     def _get_disk_sprite(self):
@@ -1039,7 +1049,9 @@ class Previewer:
     def _repr_mimebundle_(self, **kwargs):
         # pylint: disable=protected-access,not-callable
         bundle = self._renderer._repr_mimebundle_()
-        assert 'text/html' not in bundle
+        if 'text/html' in bundle:
+            raise RuntimeError(
+                "Unexpected 'text/html' entry in renderer MIME bundle")
         bundle['text/html'] = self._repr_html_()
         return bundle
 
@@ -1089,7 +1101,7 @@ def rgb_to_html(rgb: tuple[float, float, float]) -> str:
 
 def ray_plane_intersect(
         ray: mi.Ray3f, plane_normal: mi.ScalarNormal3f, plane_offset: float
-    ) -> tuple[bool, float | None, mi.Point3f | None]:
+    ) -> tuple[bool, float | None, bool]:
     """Ray-plane intersection helper.
 
     Returns:
@@ -1097,14 +1109,16 @@ def ray_plane_intersect(
             True if the ray intersects the plane, False otherwise
         t: float | None
             Intersection distance, or None if no intersection
-        above: bool | None
+        above: bool
             True if the ray approaches the plane from above (according to the
             given plane normal).
     """
-    # Plane equation: dot(normal, point) = offset
+    # Plane equation (Three.js / pythreejs convention):
+    #   dot(normal, point) + offset = 0
     # Ray equation: point = origin + t * direction
-    # Intersection: dot(normal, origin + t * direction) = offset
-    # Solving for t: t = (offset - dot(normal, origin)) / dot(normal, direction)
+    # Intersection: dot(normal, origin + t * direction) + offset = 0
+    # Solving for t:
+    #   t = (-offset - dot(normal, origin)) / dot(normal, direction)
     normal_dot_origin = dr.dot(plane_normal, ray.o)
     normal_dot_direction = dr.dot(plane_normal, ray.d)
 

@@ -12,8 +12,8 @@ import weakref
 import drjit as dr
 import mitsuba as mi
 import os
-from .utils import theta_phi_from_unit_vec, rotation_matrix
-from .utils.meshes import clone_mesh, load_mesh, remove_mesh_duplicate_vertices
+from .utils import look_at_orientation, rotation_matrix
+from .utils.meshes import clone_mesh, load_mesh, remove_mesh_duplicate_vertices, build_mesh_directed_edges
 from .radio_materials import RadioMaterialBase
 from . import scene as scene_module
 from sionna.rt import RadioDevice
@@ -86,20 +86,18 @@ class SceneObject:
             raise ValueError("Either a Mitsuba Shape (mi_mesh) or a filename"
                              " (fname) must be provided")
 
-        # Disable warnings when building directed edges, as this can
-        # throw ignorable warnings.
-        mi.set_log_level(mi.LogLevel.Error)
-        mi_mesh.build_directed_edges()
-        mi.set_log_level(mi.LogLevel.Warn)
+        # If duplicated vertices are removed, the utility ``remove_mesh_duplicate_vertices``
+        # will build the directed edges. Otherwise, we need to build them manually.
+        if remove_duplicate_vertices:
+            remove_mesh_duplicate_vertices(mi_mesh)
+        else:
+            build_mesh_directed_edges(mi_mesh)
 
         if radio_material is not None:
             if not isinstance(radio_material, RadioMaterialBase):
                 raise ValueError("The `radio_material` for the object to"
                                  " instantiate must be a RadioMaterialBase")
             mi_mesh.set_bsdf(radio_material)
-
-        if remove_duplicate_vertices:
-            remove_mesh_duplicate_vertices(mi_mesh)
 
         # Object naming.
         if name is not None:
@@ -253,7 +251,7 @@ class SceneObject:
     def velocity(self):
         r"""Get/set the velocity vector [m/s]
 
-        The velocity must to be set at least once before it can be
+        The velocity must be set at least once before it can be
         differentiated.
 
         :type: :py:class:`mi.Vector3f`
@@ -266,8 +264,8 @@ class SceneObject:
     @velocity.setter
     def velocity(self, v: mi.Vector3f):
         v = mi.Vector3f(v)
-        assert dr.width(v) == 1,\
-            "Only a single velocity vector must be provided"
+        if dr.width(v) != 1:
+            raise ValueError("Only a single velocity vector must be provided")
 
         # If the raw attribute was not yet instantiated, it is.
         if self._velocity_params is None:
@@ -336,7 +334,7 @@ class SceneObject:
 
         new_orientation = mi.Point3f(new_orientation)
 
-        # Build the transformtation corresponding to the new rotation
+        # Build the transformation corresponding to the new rotation
         new_rotation = rotation_matrix(new_orientation)
 
         # Invert the current orientation
@@ -406,7 +404,7 @@ class SceneObject:
         # scene
         vp_key = self._mi_mesh.id() + ".vertex_positions"
 
-        # Get the current rotation and it's inverse
+        # Get the current rotation and its inverse
         cur_rotation = rotation_matrix(self.orientation)
         inv_cur_rotation = cur_rotation.T
 
@@ -427,17 +425,35 @@ class SceneObject:
         scene_params.update()
         self.scene.scene_geometry_updated()
 
-    def look_at(self, target: mi.Point3f | RadioDevice | str):
+    def look_at(self, target: mi.Point3f | SceneObject | RadioDevice | str):
         # pylint: disable=line-too-long
         r"""
         Sets the orientation so that the x-axis points toward a position
 
-        :param target:  A position or the name or instance of an
-            object in the scene to point toward to
+        The world z-axis is used as up direction. For a vertical look-at
+        direction, for which the rotation about the x-axis is not determined by
+        the look-at direction alone, the azimuth is set to :math:`\varphi=0`.
+
+        :param target: A position, or the name or instance of a scene object
+            or radio device to point toward
+
+        :raises ValueError: If ``target`` coincides with the object
+            position, for which the look-at direction is undefined
         """
 
         # Get position to look at
-        if isinstance(target, (SceneObject, RadioDevice)):
+        if isinstance(target, str):
+            if self.scene is None:
+                raise ValueError("Scene is not set: Object must be added to a"
+                                 " scene before looking at a named target")
+            item = self.scene.get(target)
+            if item is None:
+                raise ValueError(f"Unknown target '{target}'")
+            if not isinstance(item, (SceneObject, RadioDevice)):
+                raise ValueError(f"Cannot look at '{target}' of type"
+                                 f" {type(item).__name__}")
+            target = item.position
+        elif isinstance(target, (SceneObject, RadioDevice)):
             target = target.position
         elif isinstance(target, mi.Point3f):
             pass # Nothing to do
@@ -445,13 +461,7 @@ class SceneObject:
             raise ValueError("Invalid type for `target`")
 
         # Compute angles relative to LCS
-        x = target - self.position
-        x = dr.normalize(x)
-        theta, phi = theta_phi_from_unit_vec(x)
-        alpha = phi # Rotation around z-axis
-        beta = theta - dr.pi/2. # Rotation around y-axis
-        gamma = 0.0 # Rotation around x-axis
-        self.orientation = mi.Point3f(alpha, beta, gamma)
+        self.orientation = look_at_orientation(self.position, target, "object")
 
     def clone(self, name: str | None = None, as_mesh=False,
               props: mi.Properties | None = None) -> SceneObject | mi.Mesh:

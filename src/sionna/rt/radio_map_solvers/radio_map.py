@@ -34,6 +34,7 @@ class RadioMap(ABC):
 
         # Positions of the transmitters
         transmitters = list(scene.transmitters.values())
+        self._tx_names = [tx.name for tx in transmitters]
         self._tx_positions = mi.Point3f(
             [tx.position.x[0] for tx in transmitters],
             [tx.position.y[0] for tx in transmitters],
@@ -125,7 +126,8 @@ class RadioMap(ABC):
         tx_positions: mi.Point3f | None = None,
         wedges: WedgeGeometry | None = None,
         diff_point: mi.Point3f | None = None,
-        wedges_samples_cnt: mi.UInt | None = None):
+        wedges_samples_cnt: mi.UInt | None = None,
+        diffraction_angular_measure: mi.Float | None = None):
         # pylint: disable=line-too-long
         r"""
         Adds the contribution of the paths that hit the measurement surface
@@ -136,7 +138,7 @@ class RadioMap(ABC):
         :param e_fields: Electric fields as real-valued vectors of dimension 4
         :param array_w: Weighting used to model the effect of the transmitter
             array
-        :param si: Informations about the interaction with the measurement
+        :param si: Information about the interaction with the measurement
             surface
         :param k_world: Directions of propagation of the incident paths
         :param tx_indices: Indices of the transmitters from which the rays originate
@@ -149,7 +151,11 @@ class RadioMap(ABC):
             Not required for non-diffracted paths.
         :param diff_point: Position of the diffraction point on the wedge.
             Not required for non-diffracted paths.
-        :param wedges_samples_cnt: Number of samples on the wedge.
+        :param wedges_samples_cnt: Number of samples on the wedge for the
+            sample's transmitter.
+            Not required for non-diffracted paths.
+        :param diffraction_angular_measure: Angular measure sampled on the
+            Keller cone.
             Not required for non-diffracted paths.
         """
         raise NotImplementedError("RadioMap is an abstract class")
@@ -206,8 +212,8 @@ class RadioMap(ABC):
         metric, such as path gain, received signal strength (RSS), or
         SINR.
 
-        :param metric: Metric to be used
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be used.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :return: Cell-to-transmitter association. The value -1 indicates that
                  there is no coverage for the cell.
@@ -247,7 +253,7 @@ class RadioMap(ABC):
         max_dist: float | None = None,
         tx_association: bool = True,
         seed: int = 1
-        ) -> Tuple[mi.TensorXu]:
+        ) -> Tuple[mi.TensorXu, mi.TensorXu]:
         # pylint: disable=line-too-long
         r"""Samples random cells in a radio map
 
@@ -262,10 +268,15 @@ class RadioMap(ABC):
         This is useful if one wants to ensure, e.g., that the sampled cells
         for each transmitter provide the highest SINR or RSS.
 
+        If no cell satisfies the constraints for a transmitter, that
+        transmitter contributes no samples: the corresponding entry of
+        ``num_valid`` is zero, and the matching row of the returned cell
+        indices is undefined and must not be used.
+
         :param num_cells: Number of returned random cells for each transmitter
 
-        :param metric: Metric to be considered for sampling cells
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be considered for sampling cells.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param min_val_db: Minimum value for the selected metric ([dB] for path
             gain and SINR; [dBm] for RSS).
@@ -291,8 +302,13 @@ class RadioMap(ABC):
 
         :param seed: Seed for the random number generator
 
-        :return: Cell indices (shape :py:class:`[num_tx, num_cells]`)
-            corresponding to the random cells
+        :return: Cell indices (shape ``[num_tx, num_cells]``).
+            For transmitter ``n``, only the first ``num_valid[n]`` entries are
+            valid samples.
+
+        :return: Number of valid samples per transmitter
+            (shape ``[num_tx]``). Equal to ``num_cells`` when at least
+            one cell matches the constraints, and ``0`` otherwise.
         """
 
         num_tx = self.num_tx
@@ -305,11 +321,11 @@ class RadioMap(ABC):
             raise ValueError("num_cells must be int.")
 
         if min_val_db is None:
-            min_val_db = float("-inf")
+            min_val_db = -dr.inf
         min_val_db = float(min_val_db)
 
         if max_val_db is None:
-            max_val_db = float("inf")
+            max_val_db = dr.inf
         max_val_db = float(max_val_db)
 
         if min_val_db > max_val_db:
@@ -320,7 +336,7 @@ class RadioMap(ABC):
         min_dist = float(min_dist)
 
         if max_dist is None:
-            max_dist = float("inf")
+            max_dist = dr.inf
         max_dist = float(max_dist)
 
         if min_dist > max_dist:
@@ -337,7 +353,7 @@ class RadioMap(ABC):
                 cm = 10. * log10(cm)
         else:
             with warnings.catch_warnings(record=True) as _:
-                # Convert the signal strengmth to dBm
+                # Convert the signal strength to dBm
                 cm = watt_to_dbm(cm)
 
         # Transmitters positions
@@ -380,9 +396,9 @@ class RadioMap(ABC):
 
         # Loop over transmitters and sample for each transmitters active cells
         self._sampler.seed(seed, num_cells)
-        # Sampled positions
-        # [num_tx, num_pos, 3]
+        # [num_tx, num_cells] — rows with num_valid == 0 are undefined
         sampled_cells = dr.zeros(mi.TensorXu, [num_tx, num_cells])
+        num_valid = dr.zeros(mi.TensorXu, [num_tx])
         scatter_ind = dr.arange(mi.UInt, num_cells)
         for n in range(num_tx):
             active_cells_tx = active_cells[n].array
@@ -401,19 +417,20 @@ class RadioMap(ABC):
             #
             dr.scatter(sampled_cells.array, cell_ids,
                        scatter_ind + n * num_cells)
+            dr.scatter(num_valid.array, mi.UInt(num_cells), mi.UInt(n))
 
-        return sampled_cells
+        return sampled_cells, num_valid
 
     def cdf(
         self,
         metric: str = "path_gain",
-        tx: int | None = None,
+        tx: int | str | None = None,
         bins: int = 200
         ) -> Tuple[plt.Figure, mi.TensorXf, mi.Float]:
         r"""Computes and visualizes the CDF of a metric of the radio map
 
-        :param metric: Metric to be shown
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be shown.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param tx: Index or name of the transmitter for which to show the radio
             map. If `None`, the maximum value over all transmitters for each
@@ -425,7 +442,7 @@ class RadioMap(ABC):
 
         :return: Data points for the chosen metric
 
-        :return: Cummulative probabilities for the data points
+        :return: Cumulative probabilities for the data points
         """
 
         tensor = self.transmitter_radio_map(metric, tx)
@@ -438,7 +455,7 @@ class RadioMap(ABC):
                 tensor = 10.*log10(tensor)
         else:
             with warnings.catch_warnings(record=True) as _:
-                # Convert the signal strengmth to dBm
+                # Convert the signal strength to dBm
                 tensor = watt_to_dbm(tensor)
 
         # Compute the CDF
@@ -446,28 +463,38 @@ class RadioMap(ABC):
         # Cells with no coverage are excluded
         active = tensor != float("-inf")
         num_active = dr.count(active)
-        # Compute the range
-        max_val = dr.max(tensor)
+        if num_active == 0:
+            raise ValueError("Cannot compute CDF: radio map has no coverage")
+
+        # Compute the range over covered cells only
+        max_val = dr.max(dr.select(active, tensor, float("-inf")))
         if max_val == float("inf"):
             raise ValueError("Max value is infinity")
-        tensor_ = dr.select(active, tensor, float("inf"))
-        min_val = dr.min(tensor_)
+        min_val = dr.min(dr.select(active, tensor, float("inf")))
         range_val = max_val - min_val
-        # Compute the cdf
-        ind = mi.UInt(dr.floor((tensor - min_val)*bins/range_val))
-        cdf = dr.zeros(mi.UInt, bins)
-        dr.scatter_inc(cdf, ind, active)
-        cdf = mi.Float(dr.cumsum(cdf))
-        cdf /= num_active
-        # Values
-        x = dr.arange(mi.Float, 1, bins+1)/bins*range_val + min_val
+
+        if range_val == 0:
+            # All covered cells share the same value
+            x = dr.zeros(mi.Float, bins) + min_val
+            cdf = dr.ones(mi.Float, bins)
+        else:
+            # Map values in [min_val, max_val] to bins [0, bins-1]. Without the
+            # clamp, tensor == max_val yields index ``bins``, which is past the
+            # end of the histogram.
+            ind = mi.UInt(dr.floor((tensor - min_val) * bins / range_val))
+            ind = dr.minimum(ind, bins - 1)
+            hist = dr.zeros(mi.UInt, bins)
+            dr.scatter_inc(hist, ind, active)
+            cdf = mi.Float(dr.cumsum(hist))
+            cdf /= num_active
+            x = dr.arange(mi.Float, 1, bins + 1) / bins * range_val + min_val
 
         # Plot the CDF
 
         fig, _ = plt.subplots()
         plt.plot(x.numpy(), cdf.numpy())
         plt.grid(True, which="both")
-        plt.ylabel("Cummulative probability")
+        plt.ylabel("Cumulative probability")
 
         # Set x-label and title
         if metric=="path_gain":
@@ -492,7 +519,7 @@ class RadioMap(ABC):
     def transmitter_radio_map(
         self,
         metric: str = "path_gain",
-        tx: int | None = None
+        tx: int | str | None = None
         ) -> mi.TensorXf:
         r"""Returns the radio map values corresponding to transmitter ``tx``
         and a specific ``metric``
@@ -500,8 +527,12 @@ class RadioMap(ABC):
         If ``tx`` is `None`, then returns for each cell the maximum value
         accross the transmitters.
 
-        :param metric: Metric for which to return the radio map
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric for which to return the radio map.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
+
+        :param tx: Index or name of the transmitter for which to return the
+            radio map. If `None`, the maximum value over all transmitters for
+            each cell is returned.
         """
 
         if metric not in ("path_gain", "rss", "sinr"):
@@ -510,10 +541,19 @@ class RadioMap(ABC):
 
         # Select metric for a specific transmitter or compute max
         if tx is not None:
-            if not isinstance(tx, int):
-                msg = "Invalid type for `tx`: Must be an int, or None"
-                raise ValueError(msg)
-            elif (tx >= self.num_tx) or (tx < 0):
+            if isinstance(tx, str):
+                try:
+                    tx = self._tx_names.index(tx)
+                except ValueError as e:
+                    raise ValueError(
+                        f"Unknown transmitter name '{tx}'. Valid names: "
+                        f"{self._tx_names}."
+                    ) from e
+            elif not isinstance(tx, int):
+                raise ValueError(
+                    "Invalid type for `tx`: Must be an int, str, or None"
+                )
+            if (tx >= self.num_tx) or (tx < 0):
                 raise ValueError(f"Invalid transmitter index {tx}, expected "
                                f"index in range [0, {self.num_tx}).")
             tensor = tensor[tx]

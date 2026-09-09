@@ -6,6 +6,7 @@
 
 from .complex import *
 from .electromagnetics import *
+from .fibonacci import fibonacci_lattice  # pylint: disable=unused-import
 from .geometry import *
 from .jones import *
 from .misc import *
