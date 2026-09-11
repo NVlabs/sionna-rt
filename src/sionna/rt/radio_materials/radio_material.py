@@ -10,8 +10,9 @@ from typing import Tuple, Callable
 
 from sionna.rt.utils import itu_coefficients_single_layer_slab,\
     complex_relative_permittivity, jones_matrix_to_world_implicit,\
-        f_utd, jones_matrix_rotator, implicit_basis_vector,\
-        wedge_interior_angle, cot, sample_keller_cone
+        cot_times_f_utd, jones_matrix_rotator, implicit_basis_vector,\
+        transverse_basis_from_normal, wedge_interior_angle,\
+        sample_keller_cone, theta_hat, theta_phi_from_unit_vec
 from sionna.rt.constants import InteractionType, DEFAULT_THICKNESS,\
     DEFAULT_FREQUENCY, NO_JONES_MATRIX
 from .radio_material_base import RadioMaterialBase
@@ -79,8 +80,10 @@ class RadioMaterial(RadioMaterialBase):
     provided that will be passed to the scattering pattern as keyword
     arguments.
 
-    :param name: Unique name of the material. Ignored if ``props`` is provided.
-    :param thickness: Thickness of the material [m]. Ignored if ``props`` is provided.
+    :param name: Unique name of the material. Required if ``props`` is not provided.
+        Ignored if ``props`` is provided.
+    :param thickness: Thickness of the material [m]. If :py:class:`None`, the
+        default material thickness is used. Ignored if ``props`` is provided.
     :param relative_permittivity: Relative permittivity of the material. Must be larger or equal to 1. Ignored if ``frequency_update_callback`` or ``props`` is provided.
     :param conductivity: Conductivity of the material [S/m].  Must be non-negative. Ignored if ``frequency_update_callback`` or ``props`` is provided.
     :param scattering_coefficient: Scattering coefficient :math:`S\in[0,1]` as defined in :eq:`scattering_coefficient`. Ignored if ``props`` is provided.
@@ -88,7 +91,8 @@ class RadioMaterial(RadioMaterialBase):
     :param scattering_pattern: Name of a registered scattering pattern for
         diffuse reflections
         :list-registry:`sionna.rt.radio_materials.scattering_pattern_registry`.
-        Only relevant if ``scattering_coefficient`` is not equal to zero. Ignored if ``props`` is provided.
+        Only relevant if ``scattering_coefficient`` is not equal to zero.
+        Defaults to ``"lambertian"``. Ignored if ``props`` is provided.
     :param frequency_update_callback: Callable used to update the material parameters when the frequency is set. This callable must take as input the frequency [Hz] and must return the material properties as a tuple: ``(relative_permittivity, conductivity)``. If set to :py:class:`None`, then material properties are constant and equal to the value set at instantiation or using the corresponding setters.
     :param color: RGB (red, green, blue) color for the radio material as displayed in the previewer and renderer. Each RGB component must have a value within the range :math:`[0,1]`. If set to :py:class:`None`, then a random color is used.
     :param props: Mitsuba container storing the material properties, and used
@@ -107,7 +111,7 @@ class RadioMaterial(RadioMaterialBase):
     def __init__(
         self,
         name: str | None = None,
-        thickness: float | mi.Float = DEFAULT_THICKNESS,
+        thickness: float | mi.Float | None = DEFAULT_THICKNESS,
         relative_permittivity: float | mi.Float = 1.0,
         conductivity: float | mi.Float = 0.0,
         scattering_coefficient: float | mi.Float = 0.0,
@@ -119,6 +123,10 @@ class RadioMaterial(RadioMaterialBase):
         **kwargs):
 
         if props is None:
+            if name is None:
+                raise ValueError("`name` is required when `props` is not provided")
+            if thickness is None:
+                thickness = DEFAULT_THICKNESS
             props = self._build_mi_props_from_params(name,
                                                      thickness,
                                                      relative_permittivity,
@@ -172,9 +180,7 @@ class RadioMaterial(RadioMaterialBase):
         for prop_name in props.keys():
             scattering_pattern_attributes[prop_name] = props[prop_name]
 
-        # Set the scattering pattern if provided
-        if scattering_pattern is None:
-            scattering_pattern = "lambertian"
+        # Resolve the scattering pattern from its registered name
         factory = scattering_pattern_registry.get(scattering_pattern)
         self.scattering_pattern = factory(**scattering_pattern_attributes)
 
@@ -220,7 +226,7 @@ class RadioMaterial(RadioMaterialBase):
 
     @property
     def thickness(self):
-        r"""Get/set the material thickness [m]
+        r"""Get/set the material thickness :math:`d \ge 0` [m]
 
         :type: :py:class:`mi.Float`
         """
@@ -229,7 +235,7 @@ class RadioMaterial(RadioMaterialBase):
     @thickness.setter
     def thickness(self, d):
         if d < 0.0:
-            raise ValueError("The material thickness must be positive")
+            raise ValueError("The material thickness must be greater or equal to 0")
         self._d = mi.Float(d)
 
     @property
@@ -244,7 +250,7 @@ class RadioMaterial(RadioMaterialBase):
     @scattering_coefficient.setter
     def scattering_coefficient(self, s):
         if s < 0.0 or s > 1.0:
-            raise ValueError("Scattering coefficient must be in range (0,1)")
+            raise ValueError("Scattering coefficient must be in range [0,1]")
         self._s = mi.Float(s)
 
     @property
@@ -259,9 +265,8 @@ class RadioMaterial(RadioMaterialBase):
     @xpd_coefficient.setter
     def xpd_coefficient(self, kx):
         if kx < 0.0 or kx > 1.0:
-            raise ValueError("XPD coefficient must be in the range (0,1)")
+            raise ValueError("XPD coefficient must be in the range [0,1]")
         self._kx = mi.Float(kx)
-        self._build_xpd_jones_mat()
 
     @property
     def scattering_pattern(self):
@@ -411,7 +416,7 @@ class RadioMaterial(RadioMaterialBase):
             sample the type of interaction
         :param sample2: A uniformly distributed sample on :math:`[0,1]^2` used
             to sample the direction of the reflected wave in the case of diffuse
-            reflection, or the directon of the diffracted ray on the Keller cone
+            reflection, or the direction of the diffracted ray on the Keller cone
         :param active: Mask to specify active rays
 
         :return: Radio material sample and Jones matrix as a :math:`4 \times 4` real-valued matrix
@@ -469,6 +474,10 @@ class RadioMaterial(RadioMaterialBase):
                                     loc_en_inter)
         reflection = specular | diffuse
         sampled_event[diffraction] = InteractionType.DIFFRACTION
+        # Diffraction is selected by the candidate generator before sampling
+        # the material. Once selected, it is the only locally enabled material
+        # event and therefore has conditional probability one.
+        probs[diffraction] = 1.
 
         # Direction of propagation of specularly reflected and transmitted
         # wave
@@ -497,7 +506,8 @@ class RadioMaterial(RadioMaterialBase):
                 ki_local, ko_spec_trans_local, reflection, r_te, r_tm, t_te, t_tm)
 
             # Computes Jones matrix for diffuse reflection
-            diff_mat = self._diffuse_reflection_matrix(si, ki_local, ko_diffuse_local,
+            diff_mat = self._diffuse_reflection_matrix(to_world, si, ki_local,
+                                                    ko_diffuse_local,
                                                     spec_trans_mat)
 
             # Computes Jones matrix for diffraction
@@ -515,11 +525,13 @@ class RadioMaterial(RadioMaterialBase):
             # sampling weighting.
             # Scaling by `1/sqrt(probs)` cancels the weighting by `probs` that
             # arises from sampling the interaction types according to these
-            # probabilities.
+            # probabilities. When no interaction is available (`probs == 0`,
+            # sampled event NONE), the weight is zero so the field stays finite.
             s = dr.select(reflection, dr.sqrt(1. - dr.square(self._s)), 1.)
             s = dr.select(diffuse, self._s, s)
             # Block differentiation through the importance sampling weighting
-            jones_mat *= s*dr.detach(dr.rsqrt(probs))
+            weight = dr.select(probs > 0., dr.rsqrt(probs), mi.Float(0.))
+            jones_mat *= s * dr.detach(weight)
 
             # Cast the Jones matrix to a mi.Spectrum to meet the requirements of
             # the BSDF interface
@@ -644,8 +656,8 @@ class RadioMaterial(RadioMaterialBase):
             ki_local, ko_spec_trans_local, reflection, r_te, r_tm, t_te, t_tm)
 
         # Computes Jones matrix for diffuse reflection
-        diff_mat = self._diffuse_reflection_matrix(si, ki_local, ko_local,
-                                                  spec_trans_mat)
+        diff_mat = self._diffuse_reflection_matrix(to_world, si, ki_local,
+                                                  ko_local, spec_trans_mat)
 
         # Computes Jones matrix for diffraction
         if diffraction_enabled:
@@ -678,10 +690,9 @@ class RadioMaterial(RadioMaterialBase):
     ) -> mi.Float:
         # pylint: disable=line-too-long
         r"""
-        Evaluates the probability of the sampled interaction type and direction of scattered ray
+        Evaluates the probability of the sampled interaction type
 
-        This function evaluates the probability density of the radio material for the scattered
-        direction ``wo`` and for the interaction type stored in ``si.dp_du.z``.
+        This function evaluates the probability of the interaction type stored in ``si.dp_du.z``.
 
         - ``si.wi`` is the direction of propagation of the incident wave in
             the local frame
@@ -699,10 +710,10 @@ class RadioMaterial(RadioMaterialBase):
 
         :param ctx: A context data structure used to specify which interaction types are enabled
         :param si: Surface interaction data structure describing the underlying surface position
-        :param wo: Direction of propagation of the scattered wave in the world frame
+        :param wo: Direction of propagation of the scattered wave in the world frame. Currently not used.
         :param active: Mask to specify active rays
 
-        :return: Probability density value
+        :return: Probability of the interaction type stored in ``si.dp_du.z``
         """
         # Incident direction of propagation in the local frame
         ki_local = si.wi
@@ -740,13 +751,13 @@ class RadioMaterial(RadioMaterialBase):
         transmission = sampled_event == InteractionType.REFRACTION
         diffraction = sampled_event == InteractionType.DIFFRACTION
 
-        prs, prd, pt, pd = self._event_probabilities(r_te, r_tm,
-                                                     t_te, t_tm,
-                                                     loc_en_inter)
+        prs, prd, pt, _ = self._event_probabilities(r_te, r_tm,
+                                                    t_te, t_tm,
+                                                    loc_en_inter)
 
         probs = dr.select(specular, prs, prd)
         probs[transmission] = pt
-        probs[diffraction] = pd
+        probs[diffraction] = 1.
         return probs
 
     def traverse(self, callback: mi.TraversalCallback):
@@ -975,6 +986,7 @@ class RadioMaterial(RadioMaterialBase):
 
     def _diffuse_reflection_matrix(
         self,
+        to_world: mi.Matrix3f,
         si: mi.SurfaceInteraction3f,
         ki_local: mi.Vector3f,
         ko_local: mi.Vector3f,
@@ -984,6 +996,7 @@ class RadioMaterial(RadioMaterialBase):
         r"""
         Computes the Jones matrix for diffuse reflection
 
+        :param to_world: To-world transform as a :math:`3 \times 3` matrix
         :param si: Surface interaction data structure describing the underlying surface position
         :param ki_local: Direction of propagation of the incident wave in the local frame
         :param ko_local: Direction of propagation of the scattered wave in the local frame
@@ -1013,13 +1026,32 @@ class RadioMaterial(RadioMaterialBase):
         # Scattering pattern
         fs = self._scattering_pattern(ki_local, ko_local)
 
+        # The model used for diffuse scattering :eq:`scattered_field` operates
+        # in the basis defined by the spherical unit vectors
+        # (theta_hat, phi_hat) of the incident and scattered directions, whereas
+        # the incident and scattered fields are represented in the implicit
+        # basis.
+        ki_world = to_world@ki_local
+        ko_world = to_world@ko_local
+        theta_i, phi_i = theta_phi_from_unit_vec(ki_world)
+        theta_o, phi_o = theta_phi_from_unit_vec(ko_world)
+        w_in = jones_matrix_rotator(ki_world, implicit_basis_vector(ki_world),
+                                    theta_hat(theta_i, phi_i))
+        w_out = jones_matrix_rotator(ko_world, theta_hat(theta_o, phi_o),
+                                     implicit_basis_vector(ko_world))
+
         # Jones matrix for diffuse reflection
-        # As the implicit basis are the spherical unit vectors
-        # (theta_hat, phi_hat), we do not need to apply change-of-basis matrices
-        # from the implicit basis to the spherical basis. Note that this would
-        # be needed otherwise, as the model used for diffuse scattering operates
-        # in the basis defined by the spherical unit vectors.
-        jones_mat = dr.sqrt(fs * solid_angle) * gamma * self._xpd_jones_mat
+        # Build the XPD matrix from the live coefficient so that Mitsuba
+        # traversal updates of ``xpd_coefficient`` are reflected immediately.
+        m = w_out @ self._xpd_matrix() @ w_in
+
+        # The Jones matrix is real-valued and is returned as a 4x4 real-valued
+        # matrix, in which the imaginary blocks vanish
+        jones_mat = dr.sqrt(fs * solid_angle) * gamma \
+            * mi.Matrix4f(m[0,0], m[0,1], 0.,     0.,
+                          m[1,0], m[1,1], 0.,     0.,
+                          0.,     0.,     m[0,0], m[0,1],
+                          0.,     0.,     m[1,0], m[1,1])
 
         return jones_mat
 
@@ -1112,42 +1144,50 @@ class RadioMaterial(RadioMaterialBase):
         factor *= dr.rcp(2 * n * dr.safe_sqrt(dr.two_pi * wavenumber)
                          * dr.sin(beta0))
 
-        d1 = cot( (dr.pi + dif_phi) * dr.rcp(2 * n) )
-        d2 = cot( (dr.pi - dif_phi) * dr.rcp(2 * n) )
-        d3 = cot( (dr.pi + sum_phi) * dr.rcp(2 * n) )
-        d4 = cot( (dr.pi - sum_phi) * dr.rcp(2 * n) )
-
-        # Complex-valued diffraction coefficients
-        d1 *= factor * f_utd(wavenumber * l * a1)
-        d2 *= factor * f_utd(wavenumber * l * a2)
-        d3 *= factor * f_utd(wavenumber * l * a3)
-        d4 *= factor * f_utd(wavenumber * l * a4)
+        # cot(ψ) F(kLa) with the finite UTD limit at shadow/reflection
+        # boundaries (where cot diverges and F → 0 simultaneously).
+        kl = wavenumber * l
+        d1 = factor * cot_times_f_utd(
+            (dr.pi + dif_phi) * dr.rcp(2 * n), kl * a1, n, kl)
+        d2 = factor * cot_times_f_utd(
+            (dr.pi - dif_phi) * dr.rcp(2 * n), kl * a2, n, kl)
+        d3 = factor * cot_times_f_utd(
+            (dr.pi + sum_phi) * dr.rcp(2 * n), kl * a3, n, kl)
+        d4 = factor * cot_times_f_utd(
+            (dr.pi - sum_phi) * dr.rcp(2 * n), kl * a4, n, kl)
 
         # Compute various vectors for basis changes
+        # Following Hashimoto et al. approach, the diffracted-field components are computed
+        # in the basis corresponding to the shadow boundary, and are used unchanged as the
+        # components in the basis of the outgoing direction.
+        k_sb_0_local = mi.reflect(-ki_local)
+        k_sb_n_local = dr.normalize(ki_local - 2.*(dr.dot(ki_local, nn_local))*nn_local)
         phi_hat_prime = dr.normalize(dr.cross(ki_local, e_hat_local))
+        phi_sb_0_hat = -dr.normalize(dr.cross(k_sb_0_local, e_hat_local))
+        phi_sb_n_hat = -dr.normalize(dr.cross(k_sb_n_local, e_hat_local))
         phi_hat = -dr.normalize(dr.cross(ko_local, e_hat_local))
 
-        e_i_s_0_hat = dr.normalize(dr.cross(ki_local, n0_local))
+        e_i_s_0_hat = transverse_basis_from_normal(ki_local, n0_local)
         e_r_s_0_hat = e_i_s_0_hat
 
-        e_i_s_n_hat = dr.normalize(dr.cross(ki_local, nn_local))
+        e_i_s_n_hat = transverse_basis_from_normal(ki_local, nn_local)
         e_r_s_n_hat = e_i_s_n_hat
 
         # Compute basis change matrices
         w_0_in = jones_matrix_rotator(ki_local, phi_hat_prime, e_i_s_0_hat)
-        w_0_out = jones_matrix_rotator(ko_local, e_r_s_0_hat, phi_hat)
+        w_0_out = jones_matrix_rotator(k_sb_0_local, e_r_s_0_hat, phi_sb_0_hat)
         w_n_in = jones_matrix_rotator(ki_local, phi_hat_prime, e_i_s_n_hat)
-        w_n_out = jones_matrix_rotator(ko_local, e_r_s_n_hat, phi_hat)
+        w_n_out = jones_matrix_rotator(k_sb_n_local, e_r_s_n_hat, phi_sb_n_hat)
 
         # Compute fresnel coefficients for both faces
         wavelength = dr.two_pi / wavenumber
         r_te_0, r_tm_0, _, _ =\
-            itu_coefficients_single_layer_slab(dr.abs(dr.sin(phi_prime)),
+            itu_coefficients_single_layer_slab(dr.abs(dr.dot(ki_local, n0_local)),
                                                eta,
                                                self._d,
                                                wavelength)
         r_te_n, r_tm_n, _, _ =\
-            itu_coefficients_single_layer_slab(dr.abs(dr.sin(exterior_angle-phi)),
+            itu_coefficients_single_layer_slab(dr.abs(dr.dot(ki_local, nn_local)),
                                                eta,
                                                self._d,
                                                wavelength)
@@ -1155,14 +1195,17 @@ class RadioMaterial(RadioMaterialBase):
         # Construct R_0 and R_n matrices
         #
 
-        # Multiply reflection coefficients by diffraction coefficients
-        d12 = -(d1 + d2)
-        r_te_0 *= d4
-        r_tm_0 *= d4
-        r_te_n *= d3
-        r_tm_n *= d3
+        # Rough-surface reflection reduction: when the scattering coefficient
+        # S > 0, the Fresnel reflection coefficients are reduced by
+        # R = sqrt(1 - S^2). These reduced coefficients must also be used in the
+        # reflection terms of the diffraction coefficients.
+        reduction = dr.sqrt(1. - dr.square(self._s))
+        r_te_0 *= reduction
+        r_tm_0 *= reduction
+        r_te_n *= reduction
+        r_tm_n *= reduction
 
-        # Compute the final diffraction matrix
+        # Compute the diffraction matrix
         r_0_real = mi.Matrix2f(r_te_0.real, 0,
                                0,           r_tm_0.real)
         r_0_imag = mi.Matrix2f(r_te_0.imag, 0,
@@ -1177,13 +1220,21 @@ class RadioMaterial(RadioMaterialBase):
         r_n_real = w_n_out @ r_n_real @ w_n_in
         r_n_imag = w_n_out @ r_n_imag @ w_n_in
 
-        d_12_real = mi.Matrix2f(d12.real,        0,
-                                       0, d12.real)
-        d_12_imag = mi.Matrix2f(d12.imag,        0,
-                                       0, d12.imag)
+        # For wide exterior angles, i.e., n*pi > pi + phi', then R_n = -I
+        wide_exterior = exterior_angle > dr.pi + phi_prime
+        r_n_real = dr.select(wide_exterior, mi.Matrix2f(-1, 0, 0, -1), r_n_real)
+        r_n_imag = dr.select(wide_exterior, mi.Matrix2f(0, 0, 0, 0), r_n_imag)
 
-        real = d_12_real + r_0_real + r_n_real
-        imag = d_12_imag + r_0_imag + r_n_imag
+        # Apply diffraction coefficients
+        d14 = d1 - d4
+        d23 = d2 - d3
+        r_0_real_d14 = r_0_real*d14.real - r_0_imag*d14.imag
+        r_0_imag_d14 = r_0_imag*d14.real + r_0_real*d14.imag
+        r_n_real_d23 = r_n_real*d23.real - r_n_imag*d23.imag
+        r_n_imag_d23 = r_n_imag*d23.real + r_n_real*d23.imag
+
+        real = r_0_real_d14 + r_n_real_d23
+        imag = r_0_imag_d14 + r_n_imag_d23
 
         # Embed into to_world transformation
         ki_world = to_world@ki_local
@@ -1206,39 +1257,37 @@ class RadioMaterial(RadioMaterialBase):
 
         return m4f
 
-    def _build_xpd_jones_mat(self):
+    def _xpd_matrix(self) -> mi.Matrix2f:
         # pylint: disable=line-too-long
         r"""
         Builds the Jones matrix from the XPD coefficient that models the
         rotation of the polarization direction
 
-        The stored Jones matrix is represented by a :math:`4 \times 4` real-valued matrix as follows:
+        The Jones matrix is real-valued, and is therefore represented by a
+        :math:`2 \times 2` real-valued matrix as follows:
 
         .. math::
 
-        J =
-            \begin{bmatrix}
-                \begin{array}{c|c}
-                    \sqrt(1-K_x)    & -\sqrt(Kx)    & 0                 & 0             \\ \hline
-                    \sqrt(Kx)       & \sqrt(1-K_x)  & 0                 & 0             \\ \hline
-                    0               & 0             & \sqrt(1-K_x)      & -\sqrt(Kx)    \\ \hline
-                    0               & 0             & \sqrt(K_x)        & \sqrt(1-Kx)   \\
-                \end{array}
-            \end{bmatrix}
+            J =
+                \begin{bmatrix}
+                    \sqrt{1-K_x} & -\sqrt{K_x} \\
+                    \sqrt{K_x} & \sqrt{1-K_x}
+                \end{bmatrix}
 
         where :math:`K_x` is the XPD coefficient.
 
-        The built Jones matrix is stored in the `self._xpd_jones_mat` attribute.
+        The matrix is derived from the live ``xpd_coefficient`` so that updates
+        performed through Mitsuba scene-parameter traversal are reflected
+        without relying on a secondary cache.
+
+        :return: XPD Jones matrix as a :math:`2 \times 2` real-valued matrix
         """
 
         a = dr.sqrt(1. - self._kx)
         b = dr.sqrt(self._kx)
 
-        m = mi.Matrix4f(a,  -b, 0., 0.,
-                        b,   a, 0., 0.,
-                        0., 0., a,  -b,
-                        0., 0., b,  a)
-        self._xpd_jones_mat = m
+        return mi.Matrix2f(a, -b,
+                           b,  a)
 
     def _diffraction_direction(
         self,

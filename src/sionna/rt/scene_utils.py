@@ -251,7 +251,7 @@ def edit_scene_shapes(
     return_dict: bool = False
 ) -> dict | mi.Scene:
     """
-    Builds a *new* Mitsuba Scene object identicaly to `scene`, but which
+    Builds a *new* Mitsuba Scene object identically to `scene`, but which
     includes the shapes listed in `add` but not the shapes listed in `remove`.
 
     The shapes and other plugins that are left untouched carry over to the new
@@ -262,10 +262,10 @@ def edit_scene_shapes(
     :param add: Object, or list /dictionary of objects to be added
 
     :param remove: Name or object, or list/dictionary of objects or names
-            to be added
+            to be removed
 
     :param return_dict: If `True`, then the new scene is returned as a
-        dictionnary. Otherwise, it is returned as a Mitsuba scene.
+        dictionary. Otherwise, it is returned as a Mitsuba scene.
     """
 
     mi_scene = scene.mi_scene
@@ -337,7 +337,7 @@ def edit_scene_shapes(
         result[shape_id] = shape
         n_shapes += 1
 
-    # Add the objects provided by the user though `add` to `result`
+    # Add the objects provided by the user through `add` to `result`
     if add is not None:
         if isinstance(add, (mi.Object, dict, SceneObject)):
             add = [add]
@@ -387,6 +387,9 @@ def extend_scene_with_mesh(scene: mi.Scene, mesh: mi.Mesh):
     :param mesh: The Mitsuba mesh to be added to the scene.
 
     :return: New Mitsuba scene with the mesh added
+
+    :raises ValueError: If ``mesh`` reuses a shape ID already present in
+        ``scene``.
     """
 
     # Result scene as a dict
@@ -400,7 +403,11 @@ def extend_scene_with_mesh(scene: mi.Scene, mesh: mi.Mesh):
         result[shape_id] = s
 
     # Add the shape
-    result[mesh.id()] = mesh
+    mesh_id = mesh.id()
+    if mesh_id in result:
+        raise ValueError(f"Cannot add mesh with ID \"{mesh_id}\" because this"
+                         " ID is already used in the scene.")
+    result[mesh_id] = mesh
 
     return mi.load_dict(result)
 

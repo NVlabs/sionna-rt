@@ -6,7 +6,7 @@ It implements all necessary components to simulate the interaction between
 radio waves and objects composed of specific materials.
 
 The base class :class:`~sionna.rt.RadioMaterialBase` provides an interface
-for implementing arbitrary radio materials and can be used to implemented
+for implementing arbitrary radio materials and can be used to implement
 custom materials, as detailed in the :ref:`Developer Guide <dev_custom_radio_materials>`.
 
 The :class:`~sionna.rt.RadioMaterial` class implements the model described in the
@@ -44,7 +44,7 @@ The ER model requires a scattering coefficient :math:`S\in[0,1]` :eq:`scattering
 a cross-polarization discrimination coefficient :math:`K_x` :eq:`xpd`, as well as a scattering pattern
 :math:`f_\text{s}(\hat{\mathbf{k}}_\text{i}, \hat{\mathbf{k}}_\text{s})` :eq:`lambertian_model`--:eq:`backscattering_model`, such as the
 :class:`~sionna.rt.LambertianPattern` or :class:`~sionna.rt.DirectivePattern`. The meaning of
-these parameters is explained in `Scattering <../em_primer.html#scattering>`_.
+these parameters is explained in :ref:`em_primer_scattering`.
 
 Sionna provides the
 :ref:`ITU models of several materials <provided-materials>` whose properties

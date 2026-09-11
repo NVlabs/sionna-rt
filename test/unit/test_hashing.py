@@ -54,7 +54,7 @@ def test_consistency(op):
 
 @pytest.mark.parametrize("op", ["round", "floor"])
 def test_fibonacci(op):
-    from sionna.rt.utils.ray_tracing import fibonacci_lattice
+    from sionna.rt.utils import fibonacci_lattice
     hash_fn = PlaneHasher(op=op)
     uv = fibonacci_lattice(10**7)
     pts = mi.warp.square_to_uniform_sphere(uv)
@@ -87,4 +87,3 @@ def test_chi_squared(n, m, op):
 
         res = chisquare(frequencies)
         assert res.pvalue > 0.01, f"Test failed for i={i}, p-value={res.pvalue}"
-

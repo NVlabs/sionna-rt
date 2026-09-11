@@ -24,12 +24,15 @@ class Receiver(RadioDevice):
     :param orientation: Orientation specified through three angles
         :math:`(\alpha, \beta, \gamma)`
         corresponding to a 3D rotation as defined in :eq:`rotation`.
-        This parameter is ignored if ``look_at`` is not :py:class:`None`.
+        Mutually exclusive with ``look_at``; specifying both raises
+        :py:class:`ValueError`. Defaults to :math:`(0,0,0)` if both
+        ``orientation`` and ``look_at`` are :py:class:`None`.
 
     :param look_at: A position or the instance of
-        :class:`~sionna.rt.RadioDevices` to look at.
+        :class:`~sionna.rt.RadioDevice` to look at.
+        Mutually exclusive with ``orientation``.
         If set to :py:class:`None`, then ``orientation`` is used to
-        orientate the device.
+        orient the device.
 
     :param velocity: Velocity vector of the receiver [m/s]
 

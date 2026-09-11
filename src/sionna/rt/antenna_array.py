@@ -4,6 +4,8 @@
 #
 """Implements classes and methods related to antenna arrays"""
 
+from numbers import Integral
+
 import mitsuba as mi
 import drjit as dr
 import matplotlib.pyplot as plt
@@ -137,9 +139,9 @@ class PlanarArray(AntennaArray):
     y-z plane, and numbered column-first from the top-left to
     bottom-right corner.
 
-    :param num_rows: Number of rows
+    :param num_rows: Number of rows (``>= 1``)
 
-    :param num_cols: Number of columns
+    :param num_cols: Number of columns (``>= 1``)
 
     :param vertical_spacing: Vertical antenna spacing
         [multiples of wavelength]
@@ -189,6 +191,15 @@ class PlanarArray(AntennaArray):
                  horizontal_spacing: float=0.5,
                  pattern: str,
                  **kwargs):
+
+        if isinstance(num_rows, bool) or not isinstance(num_rows, Integral):
+            raise TypeError("`num_rows` must be an integer")
+        if isinstance(num_cols, bool) or not isinstance(num_cols, Integral):
+            raise TypeError("`num_cols` must be an integer")
+        if num_rows < 1:
+            raise ValueError("`num_rows` must be greater than or equal to one")
+        if num_cols < 1:
+            raise ValueError("`num_cols` must be greater than or equal to one")
 
         # Create list of antennas
         array_size = num_rows*num_cols

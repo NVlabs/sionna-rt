@@ -286,7 +286,7 @@ def f_utd(x: mi.Float) -> mi.Complex2f:
 
     where :math:`F_c^*(x)` is the complex conjugate of the Fresnel integral :eq:`fresnel_integral`.
 
-    :param x: Argument of the UTD transition function
+    :param x: Argument of the UTD transition function. Must satisfy :math:`x \ge 0`.
 
     :return: Real and imaginary parts of the UTD transition function
 
@@ -301,7 +301,6 @@ def f_utd(x: mi.Float) -> mi.Complex2f:
         import matplotlib.pyplot as plt
         import drjit as dr
         import mitsuba as mi
-        mi.set_variant("cuda_ad_mono_polarized", "llvm_ad_mono_polarized")
         from sionna.rt.utils import f_utd, cpx_convert
 
         x = np.logspace(-3, 1, 1000)
@@ -348,3 +347,60 @@ def f_utd(x: mi.Float) -> mi.Complex2f:
     f *= dr.exp(mi.Complex2f(0,x))
 
     return f
+
+def cot_times_f_utd(
+        psi: mi.Float,
+        x: mi.Float,
+        n: mi.Float,
+        kl: mi.Float) -> mi.Complex2f:
+    # pylint: disable=line-too-long
+    r"""
+    Evaluates the UTD product :math:`\cot(\psi)\,F(x)` with a finite boundary
+    limit
+
+    Away from shadow and reflection boundaries the value coincides with
+    :math:`\cot(\psi)\,F(x)`. On those boundaries
+    :math:`\cot(\psi)\to\pm\infty` while :math:`F(x)\to 0` with
+    :math:`x = kLa(\psi)`, and the product has the one-sided limit
+
+    .. math::
+        \lim \cot(\psi)\,F(kLa)
+            = \mathrm{sign}(\sin\psi)\,n\sqrt{2\pi kL}\,e^{j\pi/4}.
+
+    At exact coincidence (:math:`\sin\psi = 0`) the positive-sin side is used.
+    The implementation uses the factored form
+    :math:`\cos(\psi)\,(\sqrt{x}/\sin\psi)\,(F(x)/\sqrt{x})` so the
+    cancelling factors never overflow.
+
+    :param psi: Cotangent argument
+        :math:`(\pi\pm\beta)/(2n)` [rad]
+    :param x: Transition-function argument :math:`kLa\ge 0`
+    :param n: Wedge parameter :math:`n = (2\pi-\text{interior})/\pi`
+    :param kl: Product :math:`kL` of wavenumber and distance parameter
+
+    :return: Complex value of :math:`\cot(\psi)\,F(x)`
+    """
+
+    sin_psi, cos_psi = dr.sincos(psi)
+    abs_sin = dr.abs(sin_psi)
+
+    # G(x) = F(x)/√x → √π e^{jπ/4} = √(π/2)(1+j) as x → 0
+    x_safe = dr.maximum(x, mi.Float(0))
+    sqrt_x = dr.sqrt(x_safe)
+    f = f_utd(x_safe)
+    g_limit = mi.Complex2f(dr.sqrt(0.5 * dr.pi), dr.sqrt(0.5 * dr.pi))
+    # Below this threshold √x underflows relative to F and the quotient is
+    # unstable; use the known small-argument limit instead.
+    x_eps = mi.Float(1e-10)
+    g = dr.select(x_safe > x_eps, f * dr.rcp(sqrt_x), g_limit)
+
+    # √x / sin(ψ) → sign(sin ψ) · n √(2kL) at a matched UTD pole
+    sgn = dr.select(sin_psi >= 0, mi.Float(1), mi.Float(-1))
+    r_limit = n * dr.sqrt(dr.maximum(2 * kl, mi.Float(0))) * sgn
+    # |sin ψ| and √x vanish together at boundaries; gate on both so that
+    # merely small but non-singular cotangents keep the direct quotient.
+    sin_eps = dr.sqrt(dr.epsilon(mi.Float))
+    at_pole = (abs_sin <= sin_eps) & (x_safe <= sin_eps)
+    r = dr.select(at_pole, r_limit, sqrt_x * dr.rcp(sin_psi))
+
+    return cos_psi * r * g

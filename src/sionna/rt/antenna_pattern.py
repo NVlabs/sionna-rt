@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 
-"""Classes and functions related to antenna patternsT"""
+"""Classes and functions related to antenna patterns"""
 
 from abc import ABC
 from typing import Callable, List, Tuple
@@ -15,7 +15,8 @@ import matplotlib.pyplot as plt
 from matplotlib import cm
 
 from .utils import theta_phi_from_unit_vec, isclose, to_world_jones_rotator,\
-    jones_matrix_rotator_flip_forward
+    jones_matrix_rotator_flip_forward, jones_matrix_rotator, theta_hat,\
+    implicit_basis_vector
 from .registry import Registry
 
 ###################################################
@@ -211,8 +212,8 @@ def v_iso_pattern(
     r"""
     Vertically polarized isotropic antenna pattern function
 
-    :param theta: Elevation angle [rad]
-    :param phi: Elevation angle [rad]
+    :param theta: Zenith angle [rad]
+    :param phi: Azimuth angle [rad]
     """
 
     # Number of samples
@@ -231,8 +232,8 @@ def v_dipole_pattern(
     Vertically polarized short dipole antenna pattern function
     from (Eq. 4-26a) :cite:p:`Balanis97`
 
-    :param theta: Elevation angle [rad]
-    :param phi: Elevation angle [rad]
+    :param theta: Zenith angle [rad]
+    :param phi: Azimuth angle [rad]
     """
     k = dr.sqrt(1.5)
     c_theta = dr.abs(k*dr.sin(theta))
@@ -247,8 +248,8 @@ def v_hw_dipole_pattern(
     Vertically polarized half-wavelength dipole antenna pattern function
     from (Eq. 4-84) :cite:p:`Balanis97`
 
-    :param theta: Elevation angle [rad]
-    :param phi: Elevation angle [rad]
+    :param theta: Zenith angle [rad]
+    :param phi: Azimuth angle [rad]
     """
     k = dr.sqrt(1.643)
     sin_theta = dr.sin(theta)
@@ -268,8 +269,8 @@ def v_tr38901_pattern(
     Vertically polarized antenna pattern function from
     3GPP TR 38.901 (Table 7.3-1) :cite:p:`TR38901_RT`
 
-    :param theta: Elevation angle [rad]
-    :param phi: Elevation angle [rad]
+    :param theta: Zenith angle [rad]
+    :param phi: Azimuth angle [rad]
     """
     # Wrap phi to [-PI,PI]
     phi = phi+dr.pi
@@ -321,8 +322,11 @@ class AntennaPattern(ABC):
     def patterns(self, v):
         if not isinstance(v, List):
             raise ValueError("`patterns` must be a list")
-        if len(v)>2:
+        if not 1 <= len(v) <= 2:
             raise ValueError("`patterns` must be a list of length 1 or 2")
+        for p in v:
+            if not callable(p):
+                raise ValueError("Each pattern must be a callable")
         self._patterns = v
 
     def compute_gain(
@@ -552,7 +556,7 @@ class PolarizedAntennaPattern(AntennaPattern):
     """
     Transforms a
     :ref:`vertically polarized antenna pattern function <v_pattern>`
-    into an arbitray single- or dual-polarized antenna pattern
+    into an arbitrary single- or dual-polarized antenna pattern
     based on a polarization and polarization model
 
     :param v_pattern: Vertically polarized antenna pattern function
@@ -683,9 +687,12 @@ def antenna_pattern_to_world_implicit(
     c_theta, c_phi = pattern(theta_local, phi_local)
     f_real, f_imag = complex2real_antenna_pattern(c_theta, c_phi)
 
-    # As the antenna pattern is evaluated in the spherical coordinate
-    # system, and because the implicit basis is the spherical coordinate system,
-    # there is no need to rotate the antenna pattern to the implicit basis.
+    # The antenna pattern is evaluated in the local spherical basis, whereas
+    # Jones vectors are represented in the implicit basis.
+    rot_to_local_implicit = jones_matrix_rotator(
+        k_local,
+        theta_hat(theta_local, phi_local),
+        implicit_basis_vector(k_local))
 
     # Rotation matrix to the world implicit basis from the local implicit basis
     rot_to_world_implicit = to_world_jones_rotator(to_world, k_local)
@@ -696,8 +703,11 @@ def antenna_pattern_to_world_implicit(
     if direction == "in":
         flip_rotator = jones_matrix_rotator_flip_forward(k_world)
         rotator = flip_rotator@rot_to_world_implicit
-    else:
+    elif direction == "out":
         rotator = rot_to_world_implicit
+    else:
+        raise ValueError('`direction` must be either "in" or "out"')
+    rotator = rotator@rot_to_local_implicit
 
     # Apply the rotation
     f_real = rotator@f_real

@@ -84,7 +84,7 @@ class RadioMaterialBase(mi.BSDF):
     @property
     def color(self):
         r"""
-        Get/set the the RGB (red, green, blue) color for the
+        Get/set the RGB (red, green, blue) color for the
         radio material as displayed in the previewer and renderer.
         Each RGB component must have a value within the range :math:`\in [0,1]`.
 
@@ -94,10 +94,13 @@ class RadioMaterialBase(mi.BSDF):
 
     @color.setter
     def color(self, new_color: Tuple[float, float, float]):
-        if len(new_color) == 3:
-            if min(new_color) < 0. or max(new_color) > 1.:
-                raise ValueError("Color components must be in the range (0,1)")
-        self._color = (new_color[0], new_color[1], new_color[2])
+        if len(new_color) != 3:
+            raise ValueError(
+                "Color must be a tuple of three RGB components in the range [0, 1]"
+            )
+        if min(new_color) < 0. or max(new_color) > 1.:
+            raise ValueError("Color components must be in the range [0, 1]")
+        self._color = (float(new_color[0]), float(new_color[1]), float(new_color[2]))
 
     # pylint: disable=unused-argument
     def clone(self,
@@ -167,10 +170,12 @@ class RadioMaterialBase(mi.BSDF):
         Samples the radio material
 
         This function samples an interaction type (e.g., specular reflection,
-        diffuse reflection or refraction) and direction of propagation for the
-        scattered ray, and returns the corresponding radio material sample and Jones matrix.
-        The returned radio material sample stores the sampled type of interaction and sampled direction
-        of propagation of the scattered ray.
+        diffuse reflection, refraction, or diffraction) and direction of
+        propagation for the scattered ray, and returns the corresponding radio
+        material sample and Jones matrix. The returned radio material sample
+        stores the sampled type of interaction, sampled direction of
+        propagation of the scattered ray, and the probability that the selected
+        interaction was sampled.
 
         The following assumptions are made on the inputs:
 
@@ -180,23 +185,40 @@ class RadioMaterialBase(mi.BSDF):
 
             specular_reflection_enabled = (ctx.component & InteractionType.SPECULAR) > 0
             diffuse_reflection_enabled = (ctx.component & InteractionType.DIFFUSE) > 0
-            transmission_enabled = (ctx.component & InteractionType.TRANSMISSION) > 0
+            refraction_enabled = (ctx.component & InteractionType.REFRACTION) > 0
+            diffraction_enabled = (ctx.component & InteractionType.DIFFRACTION) > 0
 
-        - ``si.wi`` is the direction of propagation of the incident wave in the world frame
-        - ``si.sh_frame`` is the frame such that the ``sh_frame.n`` is the normal to the intersected surface in the world coordinate system
-        - ``si.dn_du`` stores the real part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_du``)
-        - ``si.dn_dv`` stores the imaginary part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_dv``)
-        - ``si.dp_du`` stores the solid angle of the ray tube (first component of ``si.dn_du``)
+        - ``si.wi`` is the direction of propagation of the incident wave in
+          the local frame
+        - ``si.sh_frame`` is the surface frame where ``sh_frame.n`` is the normal to
+          the intersected surface in the world coordinate system
+        - ``si.dn_du`` stores the edge vector in the local frame.
+          This is only used for diffraction.
+        - ``si.dn_dv`` stores the normal to the n-face in the local frame.
+          This is only used for diffraction.
+        - ``si.dp_du`` stores the distance from the diffraction point to the source,
+          the distance from the diffraction point to the receiver, and the flags indicating
+          the enabled interaction types. The first two components are only used when
+          diffraction is sampled.
+        - ``si.duv_dx`` and ``si.duv_dy`` stores the incident field
+        - ``si.t`` stores the solid angle of the incident ray tube.
+
+        Note that all quantities related to diffraction are integrated to the paths only
+        if diffraction is sampled.
 
         The outputs are set as follows:
 
-        - ``bs.wo`` is the direction of propagation of the sampled scattered ray in the world frame
-        - ``jones_mat`` is the Jones matrix describing the transformation incurred to the incident wave in the implicit world frame
+        - ``bs.wo`` is the direction of propagation of the sampled scattered ray in
+          the world frame
+        - ``bs.sampled_component`` is the sampled interaction type
+        - ``bs.pdf`` is the probability of the sampled interaction type
+        - ``jones_mat`` is the Jones matrix describing the transformation incurred
+          to the incident wave in the implicit world frame
 
         :param ctx: A context data structure used to specify which interaction types are enabled
         :param si: Surface interaction data structure describing the underlying surface position
         :param sample1: A uniformly distributed sample on :math:`[0,1]` used to sample the type of interaction
-        :param sample2: A uniformly distributed sample on :math:`[0,1]^2` used to sample the direction of the reflected wave in the case of diffuse reflection
+        :param sample2: A uniformly distributed sample on :math:`[0,1]^2` used to sample the direction of the reflected wave in the case of diffuse reflection, or the direction of the diffracted ray on the Keller cone
         :param active: Mask to specify active rays
 
         :return: Radio material sample and Jones matrix as a :math:`4 \times 4` real-valued matrix
@@ -215,16 +237,21 @@ class RadioMaterialBase(mi.BSDF):
         Evaluates the radio material
 
         This function evaluates the Jones matrix of the radio material for the scattered
-        direction ``wo`` and for the interaction type stored in ``si.prim_index``.
+        direction ``wo`` and for the interaction type stored in ``si.dp_du.z``.
 
-        The following assumptions are made on the inputs:
-
-        - ``si.wi`` is the direction of propagation of the incident wave in the world frame
-        - ``si.sh_frame`` is the frame such that the ``sh_frame.n`` is the normal to the intersected surface in the world coordinate system
-        - ``si.dn_du`` stores the real part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_du``)
-        - ``si.dn_dv`` stores the imaginary part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_dv``)
-        - ``si.dp_du`` stores the solid angle of the ray tube (first component of ``si.dn_du``)
-        - ``si.prim_index`` stores the interaction type to evaluate
+        - ``si.wi`` is the direction of propagation of the incident wave in
+          the local frame
+        - ``si.sh_frame`` is the surface frame where ``sh_frame.n`` is the normal to
+          the intersected surface in the world coordinate system
+        - ``si.dn_du`` stores the edge vector in the local frame.
+          This is only used for diffraction.
+        - ``si.dn_dv`` stores the normal to the n-face in the local frame.
+          This is only used for diffraction.
+        - ``si.dp_du`` stores the distance from the diffraction point to the source,
+          the distance from the diffraction point to the receiver, and the interaction
+          type. The first two components are only used when diffraction is sampled.
+        - ``si.duv_dx`` and ``si.duv_dy`` stores the incident field
+        - ``si.t`` stores the solid angle of the incident ray tube.
 
         :param ctx: A context data structure used to specify which interaction types are enabled
         :param si: Surface interaction data structure describing the underlying surface position
@@ -247,16 +274,24 @@ class RadioMaterialBase(mi.BSDF):
         Evaluates the probability of the sampled interaction type and direction of scattered ray
 
         This function evaluates the probability density of the radio material for the scattered
-        direction ``wo`` and for the interaction type stored in ``si.prim_index``.
+        direction ``wo`` and for the interaction type stored in ``si.dp_du.z``.
 
-        The following assumptions are made on the inputs:
+        Note that the built-in :class:`~sionna.rt.RadioMaterial` returns the event
+        probability only and does not use ``wo``.
 
-        - ``si.wi`` is the direction of propagation of the incident wave in the world frame
-        - ``si.sh_frame`` is the frame such that the ``sh_frame.n`` is the normal to the intersected surface in the world coordinate system
-        - ``si.dn_du`` stores the real part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_du``)
-        - ``si.dn_dv`` stores the imaginary part of the S and P components of the incident electric field represented in the implicit world frame (first and second components of ``si.dn_dv``)
-        - ``si.dp_du`` stores the solid angle of the ray tube (first component of ``si.dn_du``)
-        - ``si.prim_index`` stores the interaction type to evaluate
+        - ``si.wi`` is the direction of propagation of the incident wave in
+          the local frame
+        - ``si.sh_frame`` is the surface frame where ``sh_frame.n`` is the normal to
+          the intersected surface in the world coordinate system
+        - ``si.dn_du`` stores the edge vector in the local frame.
+          This is only used for diffraction.
+        - ``si.dn_dv`` stores the normal to the n-face in the local frame.
+          This is only used for diffraction.
+        - ``si.dp_du`` stores the distance from the diffraction point to the source,
+          the distance from the diffraction point to the receiver, and the interaction
+          type. The first two components are only used when diffraction is sampled.
+        - ``si.duv_dx`` and ``si.duv_dy`` stores the incident field
+        - ``si.t`` stores the solid angle of the incident ray tube.
 
         :param ctx: A context data structure used to specify which interaction types are enabled
         :param si: Surface interaction data structure describing the underlying surface position

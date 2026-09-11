@@ -4,14 +4,19 @@
 #
 
 import pytest
+import drjit as dr
 import mitsuba as mi
 import numpy as np
 
 from sionna import rt
-from sionna.rt import load_scene, ITURadioMaterial, InteractionType,\
-    INVALID_SHAPE, INVALID_PRIMITIVE
+from sionna.rt import load_scene, ITURadioMaterial, RadioMaterial,\
+    InteractionType, INVALID_SHAPE, INVALID_PRIMITIVE
+from sionna.rt.constants import NO_JONES_MATRIX
 from sionna.rt.path_solvers.sb_candidate_generator import SBCandidateGenerator
+from sionna.rt.path_solvers.sb_deterministic import SBDeterministicCandidateGenerator
 
+
+GENERATOR_TYPES = [SBCandidateGenerator, SBDeterministicCandidateGenerator]
 
 ############################################################
 # Utilities
@@ -77,7 +82,8 @@ def load_box_box_two_screens_scene(material_name, thickness, scattering_coeffici
     'specular', # Specular reflection
     'transmission', # Transmission
 ])
-def test_specular_reflection_transmission_depth_1(int_type_str):
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_reflection_transmission_depth_1(int_type_str, Generator):
     """
     Tests chains of depth 1 with specular or transmission
 
@@ -87,9 +93,6 @@ def test_specular_reflection_transmission_depth_1(int_type_str):
         'specular': Test with only specular reflection
         'transmission': Test with only transmission
     """
-    assert int_type_str in ('specular', 'transmission'), "Wrong interaction type"
-
-
     if int_type_str == 'specular':
         thickness = 1.0 # Only reflection as using metal as material
         int_type = InteractionType.SPECULAR
@@ -99,6 +102,8 @@ def test_specular_reflection_transmission_depth_1(int_type_str):
         int_type = InteractionType.REFRACTION
         expected_count = 1 # Only a single one suffices,
                            # through which primitive is not important
+    else:
+        raise ValueError(f"Invalid interaction type: {int_type_str}")
 
     source = mi.Point3f(0., 0., 1.5)
     target = mi.Point3f(1., 1., 1.)
@@ -108,7 +113,7 @@ def test_specular_reflection_transmission_depth_1(int_type_str):
     max_num_paths = 1000
 
     scene = load_box_scene("metal", thickness, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, source, target, samples_per_src, max_num_paths, max_depth,
                    los=True, refraction=True, specular_reflection=True,
@@ -148,14 +153,16 @@ def test_specular_reflection_transmission_depth_1(int_type_str):
     assert np.unique(primitives).shape[0] == expected_count + 1
 
     # No paths should be valid, i.e., only candidates
-    assert valid[los_index]
+    assert valid[los_index], f"{valid=}, {los_index=}"
     assert np.all(np.logical_not(np.delete(valid, los_index)))
+
 
 @pytest.mark.parametrize("int_type_str", [
     'specular', # Specular reflection
     'transmission', # Transmission
 ])
-def test_specular_or_transmission_depth_1_multilink(int_type_str):
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_or_transmission_depth_1_multilink(int_type_str, Generator):
     """
     Tests chains of depth 1 with specular *or* transmission with multiple
     sources and targets
@@ -167,8 +174,6 @@ def test_specular_or_transmission_depth_1_multilink(int_type_str):
         'transmission': Test with only transmission
     """
 
-    assert int_type_str in ('specular', 'transmission'), "Wrong interaction type"
-
     if int_type_str == 'specular':
         thickness = 1.0 # Only reflection as using metal as material
         int_type = InteractionType.SPECULAR
@@ -178,6 +183,8 @@ def test_specular_or_transmission_depth_1_multilink(int_type_str):
         int_type = InteractionType.REFRACTION
         expected_count = 1 # Only a single one suffices,
                             # through which primitive is not important
+    else:
+        raise ValueError(f"Invalid interaction type: {int_type_str}")
 
     # 2 sources
     sources = mi.Point3f([-3., -3],
@@ -195,7 +202,7 @@ def test_specular_or_transmission_depth_1_multilink(int_type_str):
     max_num_paths = 10000
 
     scene = load_box_scene("metal", thickness, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=True, refraction=True, specular_reflection=True,
@@ -210,8 +217,8 @@ def test_specular_or_transmission_depth_1_multilink(int_type_str):
     tgt_indices = paths.target_indices.numpy()
 
     # Depth should be set to 1 and max_num_path to 12*6, as they are 12
-    # primitives in the scene.mi_scene, and each of the 6 link should have the 12
-    # primitives as candidates
+    # primitives in the scene.mi_scene, and each of the 6 links should have all
+    # 12 primitives as candidates.
     assert paths.buffer_size == (expected_count+1)*6
     assert paths.max_depth == 1
 
@@ -266,7 +273,8 @@ def test_specular_or_transmission_depth_1_multilink(int_type_str):
     # No paths should be valid, i.e., only candidates
     assert np.all(np.logical_not(valid))
 
-def test_specular_and_transmission_depth_1():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_and_transmission_depth_1(Generator):
     """
     Test single reflection (depth of 1) with both specular reflection
     and transmission
@@ -283,7 +291,7 @@ def test_specular_and_transmission_depth_1():
     # Set material to glass with a thickness of 1cm, which lead to almost equal
     # splitting of the energy between transmission and reflection
     scene = load_box_scene("glass", 0.01, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, source, target, samples_per_src, max_num_paths, max_depth,
                    los=True, refraction=True, specular_reflection=True,
@@ -345,7 +353,8 @@ def test_specular_and_transmission_depth_1():
     inter_pair = np.unique(inter_pair, axis=0)
     assert inter_pair.shape[0] == 7
 
-def test_specular_and_transmission_depth_1_multilink():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_and_transmission_depth_1_multilink(Generator):
     """
     Test single reflection (depth of 1) with both specular reflection
     and transmission with multiple sources and targets
@@ -370,7 +379,7 @@ def test_specular_and_transmission_depth_1_multilink():
     # Set material to glass with a thickness of 1cm, which lead to almost equal
     # splitting of the energy between transmission and reflection
     scene = load_box_scene("glass", 0.01, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=True, refraction=True, specular_reflection=True,
@@ -440,7 +449,8 @@ def test_specular_and_transmission_depth_1_multilink():
     inter_pair = np.unique(inter_pair, axis=0)
     assert inter_pair.shape[0] == 7*6
 
-def test_los_with_obstruction_multilink():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_los_with_obstruction_multilink(Generator):
     r"""
     In the box scene with a screen and multiple links, check that LoS that should
     be obstructed are
@@ -465,7 +475,7 @@ def test_los_with_obstruction_multilink():
     # Scattering coefficient for the screen set to 0
     scene = load_box_one_screen_scene("glass", 0.01, 0.0)
 
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=True, refraction=True, specular_reflection=True,
@@ -497,14 +507,21 @@ def test_los_with_obstruction_multilink():
     # There should be only 2 LoS:
     #   source 0 --> target 0
     #   source 1 --> target 2
-    assert los_src_indices[0] == 0 and los_tgt_indices[0] == 0
-    assert los_src_indices[1] == 1 and los_tgt_indices[1] == 2
+    los_pairs = set(zip(los_src_indices, los_tgt_indices))
+    assert los_pairs == {(0, 0), (1, 2)}
+
+    if Generator is SBDeterministicCandidateGenerator:
+        los_pairs = np.stack([los_src_indices, los_tgt_indices], axis=1)
+        assert np.array_equal(los_pairs, np.array([[0, 0], [1, 2]]))
+
+
 
 @pytest.mark.parametrize("scene_name", [
     "box_knife",
     "box_one_screen",
 ])
-def test_specular_chains_high_depth(scene_name):
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_chains_high_depth(scene_name, Generator):
     r"""
     Test specular chains of high depth
     - No duplicates
@@ -535,7 +552,7 @@ def test_specular_chains_high_depth(scene_name):
     else:
         scene = load_box_one_screen_scene("glass", 0.01, 0.0)
 
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                     los=False, refraction=True, specular_reflection=True,
@@ -606,7 +623,8 @@ def test_specular_chains_high_depth(scene_name):
             _, counts = np.unique(inter, axis=0, return_counts=True)
             assert np.all(np.equal(counts, 1))
 
-def test_specular_prefixes():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_specular_prefixes(Generator):
     """
     Thest that, for specular chains, all possible candidates are generated with
     diffraction disabled.
@@ -629,7 +647,7 @@ def test_specular_prefixes():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_scene("metal", 0.01, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                     los=False, refraction=True, specular_reflection=True,
@@ -645,7 +663,8 @@ def test_specular_prefixes():
     #     origin of the path, which leads to 114 candidates.
     assert paths.buffer_size == 6 * 150
 
-def test_diffraction_knife():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_diffraction_knife(Generator):
     """
     Test diffraction in the knife scene (wedge diffraction) with max_depth = 1.
     Ensure that all candidates are found in this simple setup.
@@ -666,7 +685,7 @@ def test_diffraction_knife():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_knife_scene("metal", 0.01, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                     los=False, refraction=True, specular_reflection=True,
@@ -693,7 +712,8 @@ def test_diffraction_knife():
     all_num_diffractions = np.array(list(num_diffractions.values()))
     assert np.all(all_num_diffractions == 2)
 
-def test_diffraction_one_screen():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_diffraction_one_screen(Generator):
     """
     Test diffraction in the one screen scene (edge diffraction) with max_depth = 1.
     Ensure that all candidates are found in this simple setup.
@@ -716,7 +736,7 @@ def test_diffraction_one_screen():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_one_screen_scene("metal", 0.01, scattering_coefficient=0.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                     los=False, refraction=True, specular_reflection=True,
@@ -743,7 +763,8 @@ def test_diffraction_one_screen():
     all_num_diffractions = np.array(list(num_diffractions.values()))
     assert np.all(all_num_diffractions == 2)
 
-def test_diffuse_depth_high():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_diffuse_depth_high(Generator):
     """
     Test paths made only of diffuse reflection
     """
@@ -765,7 +786,7 @@ def test_diffuse_depth_high():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_scene("metal", 0.01, scattering_coefficient=1.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=False, refraction=False, specular_reflection=False,
@@ -802,7 +823,8 @@ def test_diffuse_depth_high():
     # All paths should be valid, i.e., no candidates
     assert np.all(valid)
 
-def test_diffuse_prefixes():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_diffuse_prefixes(Generator):
     """
     Check that, in the case of the box scene for which there is no occlusion,
     all all prefixes are listed as valid paths when there is only diffuse
@@ -826,7 +848,7 @@ def test_diffuse_prefixes():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_scene("metal", 0.01, scattering_coefficient=1.)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=False, refraction=True, specular_reflection=True,
@@ -891,7 +913,8 @@ def test_diffuse_prefixes():
                         break
                 assert found
 
-def test_diffuse_specular():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_diffuse_specular(Generator):
     """
     Check paths made of mixtures of specular and diffuse
     """
@@ -919,7 +942,7 @@ def test_diffuse_specular():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_scene("metal", 0.01, scattering_coefficient=np.sqrt(1.-ps))
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                    los=False, refraction=True, specular_reflection=True,
@@ -989,7 +1012,8 @@ def test_diffuse_specular():
         assert np.all(valid[diff_ind])
         assert np.all(np.logical_not(valid[spec_ind]))
 
-def test_edge_diffraction_flag():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_edge_diffraction_flag(Generator):
     """Test flag enabling/disabling edge diffraction
     """
     source = mi.Point3f(-3., -3., 3.5)
@@ -1000,7 +1024,7 @@ def test_edge_diffraction_flag():
     max_num_paths = 100000
 
     scene = load_box_one_screen_scene("metal", 0.01, 1.0)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     # Edge diffraction enabled
     paths = tracer(scene.mi_scene, source, target, samples_per_src, max_num_paths, max_depth,
@@ -1022,7 +1046,8 @@ def test_edge_diffraction_flag():
     has_diffraction = np.any(np.equal(interactions, InteractionType.DIFFRACTION))
     assert not has_diffraction
 
-def test_no_diffuse_and_diffraction():
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_no_diffuse_and_diffraction(Generator):
     """Test that no path contains both diffuse and diffraction"""
 
     # 2 sources
@@ -1043,7 +1068,7 @@ def test_no_diffuse_and_diffraction():
     # Set material to metal which leads to all the energy being reflected
     # Scattering coefficient set to 0
     scene = load_box_box_two_screens_scene("metal", 0.01, scattering_coefficient=0.7)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, sources, targets, samples_per_src, max_num_paths, max_depth,
                     los=False, refraction=True, specular_reflection=True,
@@ -1064,8 +1089,9 @@ def test_no_diffuse_and_diffraction():
 @pytest.mark.parametrize("specular_reflection", [True, False])
 @pytest.mark.parametrize("diffuse_reflection", [True, False])
 @pytest.mark.parametrize("diffraction", [True, False])
-def test_intertaction_type_flags(los, refraction, specular_reflection,
-                                 diffuse_reflection, diffraction):
+@pytest.mark.parametrize("Generator", GENERATOR_TYPES)
+def test_interaction_type_flags(los, refraction, specular_reflection,
+                                diffuse_reflection, diffraction, Generator):
     """
     Test flags enabling/disabling interaction types
     """
@@ -1078,7 +1104,7 @@ def test_intertaction_type_flags(los, refraction, specular_reflection,
     max_num_paths = 10000
 
     scene = load_box_knife_scene("glass", 0.01, 0.7)
-    tracer = SBCandidateGenerator()
+    tracer = Generator()
 
     paths = tracer(scene.mi_scene, source, target, samples_per_src, max_num_paths, max_depth,
                 los=los, refraction=refraction, specular_reflection=specular_reflection,
@@ -1086,6 +1112,10 @@ def test_intertaction_type_flags(los, refraction, specular_reflection,
                 edge_diffraction=True, seed=1)
     paths.shrink()
     interactions = paths.interaction_types.numpy()
+
+    print(f"{paths.paths_counter=}")
+    print(f"{paths.buffer_size=}")
+    print(f"{interactions=}")
 
     has_los = np.any(np.all(np.equal(interactions, InteractionType.NONE), axis=1))
     assert np.logical_not(np.bitwise_xor(los, has_los))
@@ -1101,3 +1131,107 @@ def test_intertaction_type_flags(los, refraction, specular_reflection,
 
     has_diffraction = np.any(np.equal(interactions, InteractionType.DIFFRACTION))
     assert np.logical_not(np.bitwise_xor(diffraction, has_diffraction))
+
+
+def test_diffraction_material_probability():
+    """Test the conditional material probability of forced diffraction."""
+
+    material = RadioMaterial(name="diffraction-probability",
+                             relative_permittivity=5.0)
+
+    si = mi.SurfaceInteraction3f()
+    si.n = mi.Normal3f(0.0, 0.0, 1.0)
+    si.sh_frame = mi.Frame3f(si.n)
+    si.wi = dr.normalize(mi.Vector3f(0.0, -0.5, -1.0))
+    si.dn_du = mi.Vector3f(1.0, 0.0, 0.0)
+    si.dn_dv = mi.Vector3f(0.0, 1.0, 0.0)
+    flags = mi.UInt(InteractionType.DIFFRACTION)
+    si.dp_du = mi.Vector3f(
+        1.0, 1.0, dr.reinterpret_array(mi.Float, flags))
+
+    ctx = mi.BSDFContext(mode=mi.TransportMode.Importance,
+                         type_mask=0, component=0)
+    ctx.component |= InteractionType.DIFFRACTION
+    ctx.component |= NO_JONES_MATRIX
+
+    sample, _ = material.sample(ctx, si, mi.Float(0.5),
+                                mi.Point2f(0.25, 0.5), True)
+    pdf = material.pdf(ctx, si, sample.wo, True)
+
+    assert sample.sampled_component[0] == InteractionType.DIFFRACTION
+    assert sample.pdf[0] == 1.0
+    assert pdf[0] == 1.0
+
+
+@pytest.mark.parametrize(
+    "specular_reflection, expected_probability",
+    [(False, 1.0),
+     (True, SBCandidateGenerator.DIFFRACTION_SAMPLING_PROBABILITY)])
+def test_sampled_diffraction_path_probability(specular_reflection,
+                                              expected_probability):
+    """Test stored diffraction probabilities for forced and mixed sampling."""
+
+    scene = load_box_one_screen_scene("metal", 0.01, 0.0)
+    source = mi.Point3f(-3.0, -3.0, 3.5)
+    target = mi.Point3f(3.0, 3.0, 3.0)
+
+    paths = SBCandidateGenerator()(
+        scene.mi_scene, source, target,
+        samples_per_src=10_000,
+        max_num_paths_per_src=100_000,
+        max_depth=1,
+        los=False,
+        specular_reflection=specular_reflection,
+        diffuse_reflection=False,
+        refraction=False,
+        diffraction=True,
+        edge_diffraction=True,
+        seed=1)
+    paths.shrink()
+
+    interactions = paths.interaction_types.numpy()
+    diffraction = interactions == InteractionType.DIFFRACTION
+    assert np.any(diffraction)
+    probs = paths.probs.numpy()[diffraction]
+    assert np.allclose(probs, expected_probability)
+    # Diffraction compensation divides by these probabilities; they must stay
+    # strictly positive and finite for every diffracted sample.
+    assert np.all(np.isfinite(probs))
+    assert np.all(probs > 0.0)
+
+
+def test_material_zero_probability_when_no_interactions_enabled():
+    """No enabled interaction types yields NONE with pdf 0 and a finite Jones matrix.
+
+    The importance-sampling weight uses ``1/sqrt(pdf)``. Without a zero-pdf
+    guard that weight is infinite and would poison radio-map fields when a ray
+    hits a surface with no enabled interaction.
+    """
+
+    material = RadioMaterial(name="zero-probability",
+                             relative_permittivity=5.0)
+
+    si = mi.SurfaceInteraction3f()
+    si.n = mi.Normal3f(0.0, 0.0, 1.0)
+    si.sh_frame = mi.Frame3f(si.n)
+    si.wi = dr.normalize(mi.Vector3f(0.0, -0.5, -1.0))
+    si.t = mi.Float(1.0)
+    si.duv_dx = mi.Vector2f(1.0, 0.0)
+    si.duv_dy = mi.Vector2f(0.0, 0.0)
+    # No specular / diffuse / refraction / diffraction locally enabled.
+    flags = mi.UInt(0)
+    si.dp_du = mi.Vector3f(
+        1.0, 1.0, dr.reinterpret_array(mi.Float, flags))
+
+    ctx = mi.BSDFContext(mode=mi.TransportMode.Importance,
+                         type_mask=0, component=0)
+
+    sample, jones = material.sample(ctx, si, mi.Float(0.5),
+                                    mi.Point2f(0.25, 0.5), True)
+    pdf = material.pdf(ctx, si, sample.wo, True)
+
+    assert sample.sampled_component[0] == InteractionType.NONE
+    assert sample.pdf[0] == 0.0
+    assert pdf[0] == 0.0
+    assert np.all(np.isfinite(jones.numpy()))
+    assert np.allclose(jones.numpy(), 0.0)

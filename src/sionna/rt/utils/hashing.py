@@ -6,17 +6,17 @@
 
 import mitsuba as mi
 import drjit as dr
-from typing import Literal
+from typing import Literal, Tuple
 
 
 def hash_fnv1a(x: mi.UInt32 | mi.UInt64,
                h: mi.UInt64 =
                    mi.UInt64(14695981039346656037)) -> mi.UInt64:
     """
-    FNV-1a hash function for a floating-point number.
+    FNV-1a hash function for an unsigned integer.
     http://www.isthe.com/chongo/tech/comp/fnv/#FNV-1a
 
-    :param x: Input value to hash
+    :param x: Input value to hash (``mi.UInt32`` or ``mi.UInt64``)
     :param h: Current hash value (default is the 64-bit FNV-1a offset basis)
     """
     if isinstance(x, mi.UInt32):
@@ -87,31 +87,43 @@ class PlaneHasher(GeometricElementHasher):
         h = hash_fnv1a(self.quantize(d, eps=1e-3), h=h)
         return h
 
-
 class EdgeHasher(GeometricElementHasher):
     """
     Hash function for edges. Relies on the FNV-1a hash function.
     """
 
+    def should_swap(
+        self, p1: mi.Point3f, p2: mi.Point3f, apply_quantization: bool = True
+    ) -> Tuple[mi.Bool, mi.Point3f, mi.Point3f]:
+        """
+        Returns a mask indicating whether the edge endpoints should be swapped
+        to obtain a consistent ordering.
+        """
+        if apply_quantization:
+            p1 = (self.quantize(p1.x), self.quantize(p1.y), self.quantize(p1.z))
+            p2 = (self.quantize(p2.x), self.quantize(p2.y), self.quantize(p2.z))
+
+        flip = (p2[2] < p1[2]) | \
+               ( (p2[2] == p1[2]) & (p2[1] < p1[1]) ) | \
+               ( (p2[2] == p1[2]) & (p2[1] == p1[1]) & (p2[0] < p1[0]) )
+
+        return flip, p1, p2
+
+
     def __call__(self,
                  p1 : mi.Point3f,
                  p2 : mi.Point3f) -> mi.UInt64:
         # Enforce a consistent order of endpoints
-        flip_eps = 1e-4
-        flip_points = (p2.z < p1.z + flip_eps) | \
-                    ( (dr.abs(p1.z - p2.z) < flip_eps)\
-                        & (p2.y < p1.y + flip_eps) ) | \
-                    ( (dr.abs(p1.z - p2.z) < flip_eps)\
-                        & (dr.abs(p1.y - p2.y) < flip_eps)\
-                        & (p2.x < p1.x + flip_eps) )
+        flip_points, p1, p2 = self.should_swap(p1, p2)
         p1_ = dr.select(flip_points, p2, p1)
         p2_ = dr.select(flip_points, p1, p2)
+        del p1, p2
 
         # Hash the sequence of float (p1.x, p1.y, p1.z, p2.x, p2.y, p2.z)
-        h = hash_fnv1a(self.quantize(p1_.x))
-        h = hash_fnv1a(self.quantize(p1_.y), h=h)
-        h = hash_fnv1a(self.quantize(p1_.z), h=h)
-        h = hash_fnv1a(self.quantize(p2_.x), h=h)
-        h = hash_fnv1a(self.quantize(p2_.y), h=h)
-        h = hash_fnv1a(self.quantize(p2_.z), h=h)
+        h = hash_fnv1a(p1_[0])
+        h = hash_fnv1a(p1_[1], h=h)
+        h = hash_fnv1a(p1_[2], h=h)
+        h = hash_fnv1a(p2_[0], h=h)
+        h = hash_fnv1a(p2_[1], h=h)
+        h = hash_fnv1a(p2_[2], h=h)
         return h

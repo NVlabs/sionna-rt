@@ -3,9 +3,22 @@ Scenes
 
 .. autofunction:: sionna.rt.load_scene
 
+.. autofunction:: sionna.rt.load_scene_from_string
+
 .. autoclass:: sionna.rt.Scene
    :members:
    :inherited-members:
+
+Default scene parameters
+------------------------
+
+These constants are the default values assigned to a newly created
+:class:`~sionna.rt.Scene` for carrier frequency, transmission bandwidth, and
+environment temperature.
+
+.. autodata:: sionna.rt.DEFAULT_FREQUENCY
+.. autodata:: sionna.rt.DEFAULT_BANDWIDTH
+.. autodata:: sionna.rt.DEFAULT_TEMPERATURE
 
 Built-in scenes
 ---------------

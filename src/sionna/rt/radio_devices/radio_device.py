@@ -6,10 +6,9 @@
 """Class implementing a radio device, i.e., a transmitter or a receiver"""
 
 import mitsuba as mi
-import drjit as dr
 from typing_extensions import Tuple, Self
 
-from sionna.rt.utils import theta_phi_from_unit_vec
+from sionna.rt.utils import look_at_orientation
 
 class RadioDevice:
     # pylint: disable=line-too-long
@@ -25,12 +24,15 @@ class RadioDevice:
     :param orientation: Orientation specified through three angles
         :math:`(\alpha, \beta, \gamma)`
         corresponding to a 3D rotation as defined in :eq:`rotation`.
-        This parameter is ignored if ``look_at`` is not :py:class:`None`.
+        Mutually exclusive with ``look_at``; specifying both raises
+        :py:class:`ValueError`. Defaults to :math:`(0,0,0)` if both
+        ``orientation`` and ``look_at`` are :py:class:`None`.
 
     :param look_at: A position or the instance of
-        :class:`~sionna.rt.RadioDevices` to look at.
+        :class:`~sionna.rt.RadioDevice` to look at.
+        Mutually exclusive with ``orientation``.
         If set to :py:class:`None`, then ``orientation`` is used to
-        orientate the device.
+        orient the device.
 
     :param velocity: Velocity vector of the radio device [m/s]
 
@@ -56,8 +58,9 @@ class RadioDevice:
         self.color = color
         self.display_radius = display_radius
 
-        assert (orientation is None) or (look_at is None), \
-               "Only one of `orientation` or `look_at` can be specified."
+        if (orientation is not None) and (look_at is not None):
+            raise ValueError("Only one of `orientation` or `look_at` can be "
+                             "specified.")
         if look_at is None:
             self.orientation = mi.Point3f(orientation) \
                                if orientation is not None \
@@ -126,10 +129,17 @@ class RadioDevice:
 
         Given a point :math:`\mathbf{x}\in\mathbb{R}^3` with spherical angles
         :math:`\theta` and :math:`\varphi`, the orientation of the radio device
-        will be set equal to :math:`(\varphi, \frac{\pi}{2}-\theta, 0.0)`.
+        will be set equal to :math:`(\varphi, \theta-\frac{\pi}{2}, 0.0)`.
+        The world z-axis is used as up direction. For a vertical
+        :math:`\mathbf{x}`, for which the rotation about the local x-axis is
+        not determined by the look-at direction alone, the azimuth is set to
+        :math:`\varphi=0`.
 
         :param target: A position, or instance of a
             :class:`~sionna.rt.RadioDevice`, in the scene to look at
+
+        :raises ValueError: If ``target`` coincides with the radio device
+            position, for which the look-at direction is undefined
         """
         # Get position to look at
         from sionna.rt import SceneObject # pylint: disable=import-outside-toplevel
@@ -139,18 +149,13 @@ class RadioDevice:
             target = mi.Point3f(target)
 
         # Compute angles relative to LCS
-        x = target - self.position
-        x = dr.normalize(x)
-        theta, phi = theta_phi_from_unit_vec(x)
-        alpha = phi # Rotation around z-axis
-        beta = theta - dr.pi/2. # Rotation around y-axis
-        gamma = 0.0 # Rotation around x-axis
-        self.orientation = mi.Point3f(alpha, beta, gamma)
+        self.orientation = look_at_orientation(self.position, target,
+                                               "radio device")
 
     @property
     def color(self):
         r"""
-        Get/set the the RGB (red, green, blue) color for the
+        Get/set the RGB (red, green, blue) color for the
         device as displayed in the previewer and renderer.
         Each RGB component must have a value within the range :math:`\in [0,1]`.
 
@@ -160,10 +165,13 @@ class RadioDevice:
 
     @color.setter
     def color(self, new_color):
-        if len(new_color) == 3:
-            if min(new_color) < 0. or max(new_color) > 1.:
-                raise ValueError("Color components must be in the range (0,1)")
-        self._color = new_color
+        if len(new_color) != 3:
+            raise ValueError(
+                "Color must be a tuple of three RGB components in the range [0, 1]"
+            )
+        if min(new_color) < 0. or max(new_color) > 1.:
+            raise ValueError("Color components must be in the range [0, 1]")
+        self._color = (float(new_color[0]), float(new_color[1]), float(new_color[2]))
 
     @property
     def display_radius(self):
@@ -176,6 +184,6 @@ class RadioDevice:
 
     @display_radius.setter
     def display_radius(self, radius):
-        assert (radius is None) or (radius >= 0), \
-               "The display radius must be a float >= 0 or None."
+        if (radius is not None) and (radius < 0):
+            raise ValueError("The display radius must be a float >= 0 or None.")
         self._display_radius = radius

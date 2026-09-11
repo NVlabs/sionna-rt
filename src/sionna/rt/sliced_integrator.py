@@ -205,7 +205,7 @@ class SlicedPathIntegrator(RBIntegrator):
             radiance if primal else diff_radiance,
             # Ray validity flag for alpha blending
             (depth != 0),
-            # Empty typle of AOVs
+            # Empty tuple of AOVs
             [],
             # State for the differential phase
             radiance
@@ -216,7 +216,9 @@ class SlicedPathIntegrator(RBIntegrator):
         self, scene: mi.Scene, si: mi.SurfaceInteraction3f, ray: mi.Ray3f,
         active: mi.Mask, return_depth: bool = False
     ) -> None:
-        assert len(self.slice_planes) <= 1, "Untested w/ multiple slice planes"
+        if len(self.slice_planes) > 1:
+            raise NotImplementedError(
+                "Untested w/ multiple slice planes")
 
         total_si_t = None
         if return_depth:

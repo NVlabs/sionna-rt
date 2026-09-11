@@ -25,7 +25,7 @@ def clone_mesh(mesh: mi.Mesh, name: str | None = None,
         If :py:class:`None`, the clone will be named as
         ``<original_name>-clone``.
 
-    :param props: Pre-populated properties to used in the new Mitsuba mesh.
+    :param props: Pre-populated properties to use in the new Mitsuba mesh.
         Allows overriding the BSDF, emitter, etc.
     """
     # Clone name
@@ -103,6 +103,9 @@ def transform_mesh(mesh: mi.Mesh,
 
     Before applying the transformations, the mesh is centered.
 
+    If the mesh stores vertex normals, Mitsuba recomputes them from the
+    updated geometry when parameters are committed.
+
     :param mesh: Mesh to be edited. The mesh is modified in-place.
     :param translation: Translation vector to apply
     :param rotation: Rotation angles [rad] specified through three angles
@@ -146,22 +149,22 @@ def remove_mesh_duplicate_vertices(mesh: mi.Mesh):
     """
     Remove duplicate vertices from a mesh
 
-    This function removes duplicate vertices from a Mitsuba mesh and updates
-    the face indices accordingly. It also updates texture coordinates and
-    recomputes vertex normals if present. The mesh is updated in place.
+    Vertices are considered duplicates when they share the same position.
+    Face indices are updated accordingly. Texture coordinates of the retained
+    representatives are preserved when present, and vertex normals are
+    recomputed if the mesh stores them. The mesh is updated in place.
 
     :param mesh: Mitsuba mesh from which to remove duplicate vertices
     """
 
     vertices = dr.unravel(mi.Point3f, mesh.vertex_positions_buffer()).numpy()
     faces = dr.unravel(mi.Point3u, mesh.faces_buffer()).numpy()
-    texcoords = dr.unravel(mi.Vector2f, mesh.vertex_texcoords_buffer()).numpy()
 
-    # Find unique vertices and their indices
+    # Find unique vertices by position and their indices
     unique_vertices, unique_indices, inverse_indices\
         = np.unique(vertices, axis=1, return_inverse=True, return_index=True)
 
-    # Update faces and texture coordinates to use new vertex indices
+    # Update faces to use new vertex indices
     new_faces = inverse_indices[faces]
 
     # Update the mesh
@@ -169,8 +172,36 @@ def remove_mesh_duplicate_vertices(mesh: mi.Mesh):
     params["vertex_positions"] = dr.ravel(mi.Point3f(unique_vertices))
     params["faces"] = dr.ravel(mi.Point3u(new_faces))
     if mesh.has_vertex_texcoords():
-        new_texcoords = texcoords[:,unique_indices]
+        texcoords = dr.unravel(mi.Vector2f,
+                               mesh.vertex_texcoords_buffer()).numpy()
+        new_texcoords = texcoords[:, unique_indices]
         params["vertex_texcoords"] = dr.ravel(mi.Vector2f(new_texcoords))
     params.update()
     if mesh.has_vertex_normals():
         mesh.recompute_vertex_normals()
+
+    # Removing duplicate vertices invalidates Mitsuba's directed edge table,
+    # so we need to rebuild it.
+    build_mesh_directed_edges(mesh)
+
+def build_mesh_directed_edges(mesh: mi.Mesh):
+    """
+    Build Mitsuba's directed edge table, used for wedge and silhouette queries
+
+    Must be called after any change to the mesh topology: Mitsuba only rebuilds
+    the table automatically for meshes with gradient tracking enabled, and
+    ``opposite_dedge()`` returns stale adjacency rather than reporting that the
+    table is outdated.
+
+    :param mesh: Mitsuba mesh for which to build the directed edge table
+    """
+    if mesh.face_count() == 0:
+        return
+
+    # Building directed edges can throw ignorable warnings, e.g. for
+    # non-manifold vertices where more than two faces meet an edge.
+    mi.set_log_level(mi.LogLevel.Error)
+    try:
+        mesh.build_directed_edges()
+    finally:
+        mi.set_log_level(mi.LogLevel.Warn)

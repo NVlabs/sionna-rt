@@ -72,3 +72,19 @@ def test01_preview_basic(has_paths):
     # Note: we don't verify that the preview widget is actually functional,
     # simply that no exception is thrown.
     scene.preview(paths=paths)
+
+
+def test_preview_empty_paths_object():
+    """Preview accepts a Paths object that contains zero paths."""
+    scene = load_scene(rt.scene.box_two_screens)
+    add_example_radio_devices(scene)
+    paths = PathSolver()(
+        scene,
+        los=False,
+        specular_reflection=False,
+        diffuse_reflection=False,
+        refraction=False,
+        diffraction=False,
+    )
+    assert paths.vertices.shape[-2] == 0
+    scene.preview(paths=paths)

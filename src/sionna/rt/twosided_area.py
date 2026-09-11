@@ -16,8 +16,10 @@ class TwosidedAreaEmitter(mi.Emitter):
     """Custom Mitsuba emitter to turn a one-sided area emitter into a
     two-sided one.
 
-    This is used for visualization of mesh-based radio maps, and hasn't been
-    thoroughly tested for correctness.
+    This is used for visualization of mesh-based radio maps. The nested
+    one-sided area emitter is sampled / evaluated on both sides of the
+    surface; ``sample_ray`` remaps half of the primary sample domain onto each
+    side and compensates the nested weight for the 50/50 side choice.
     """
 
     def __init__(self, props):
@@ -31,26 +33,46 @@ class TwosidedAreaEmitter(mi.Emitter):
         self.m_flags = self.nested.m_flags
         self.m_needs_sample_2 = self.nested.m_needs_sample_2
         self.m_needs_sample_3 = self.nested.m_needs_sample_3
+        # Strong reference so the shape is not collected while nested holds
+        # only a raw pointer (see Mitsuba nested-area-emitter lifetime notes).
+        self._shape_ref = None
 
+    def _ensure_nested_shape(self):
+        """Forward the parent shape to the nested area emitter if needed.
+
+        Mitsuba attaches shapes to emitters at the C++ level without always
+        invoking the Python ``set_shape`` override, so the nested emitter can
+        remain shape-less unless we sync explicitly.
+        """
+        shape = self.get_shape()
+        if shape is not None and self.nested.get_shape() is None:
+            self.nested.set_shape(shape)
+            self._shape_ref = shape
+
+    def set_shape(self, shape):
+        super().set_shape(shape)
+        self.nested.set_shape(shape)
+        self._shape_ref = shape
 
     def sample_ray(self, time: mi.Float, sample1: mi.Float,
                    sample2: mi.Point2f, sample3: mi.Point2f,
                    active: mi.Mask) -> tuple[mi.Ray3f, mi.Spectrum]:
-        # Equal probability of choosing either side
+        self._ensure_nested_shape()
+        # Equal probability of choosing either side. Remap each half of the
+        # [0, 1] sample domain back onto [0, 1] before reuse.
         flip = sample1 > 0.5
-        # Reuse sample1
-        sample1 = (sample1 - 0.5) * 2
+        sample1 = dr.select(flip, (sample1 - 0.5) * 2, sample1 * 2)
 
         ray, weight = self.nested.sample_ray(time, sample1, sample2, sample3,
                                              active)
         ray.d = dr.select(flip, -ray.d, ray.d)
-        return ray, weight
-
+        # Nested weight assumes a one-sided PDF; divide by the 0.5 side choice.
+        return ray, weight * 2
 
     def sample_direction(self, ref: mi.Interaction3f, sample: mi.Point2f,
                          active: mi.Mask) -> tuple[mi.DirectionSample3f,
                                                    mi.Spectrum]:
-        # Note: this wasn't fully tested for correctness.
+        self._ensure_nested_shape()
         ds, weight = self.nested.sample_direction(ref, sample, active)
 
         # If we ended up with zero radiance because we were on the wrong side,
@@ -67,12 +89,14 @@ class TwosidedAreaEmitter(mi.Emitter):
 
     def pdf_direction(self, ref: mi.Interaction3f, ds: mi.DirectionSample3f,
                       active: mi.Mask) -> mi.Float:
+        self._ensure_nested_shape()
         wrong_side = dr.dot(ds.n, ds.d) >= 0
         ds.d = dr.select(wrong_side, -ds.d, ds.d)
         return self.nested.pdf_direction(ref, ds, active)
 
     def eval_direction(self, ref: mi.Interaction3f, ds: mi.DirectionSample3f,
                        active: mi.Mask) -> mi.Spectrum:
+        self._ensure_nested_shape()
         wrong_side = dr.dot(ds.n, ds.d) >= 0
         ds.d = dr.select(wrong_side, -ds.d, ds.d)
         return self.nested.eval_direction(ref, ds, active)
@@ -86,11 +110,13 @@ class TwosidedAreaEmitter(mi.Emitter):
     def sample_position(self, time: mi.Float, sample: mi.Point2f,
                         active: mi.Mask) -> tuple[mi.PositionSample3f,
                                                   mi.Float]:
+        self._ensure_nested_shape()
         return self.nested.sample_position(time, sample, active)
 
     def pdf_position(self,
                      ps: mi.PositionSample3f,
                      active: mi.Mask) -> mi.Float:
+        self._ensure_nested_shape()
         return self.nested.pdf_position(ps, active)
 
     def sample_wavelengths(self, *args, **kwargs):

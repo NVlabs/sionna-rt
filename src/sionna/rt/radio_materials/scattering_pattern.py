@@ -5,6 +5,7 @@
 """Scattering patterns"""
 
 from abc import abstractmethod
+from numbers import Integral
 from typing import Callable
 import matplotlib.pyplot as plt
 from matplotlib import cm
@@ -237,14 +238,15 @@ class BackscatteringPattern(ScatteringPattern):
     Backscattering model from :cite:p:`Degli-Esposti07` as given in
     :eq:`backscattering_model`
 
-    :param alpha_r: Parameter related to the width of the scattering lobe
-        in the direction of the specular reflection
+    :param alpha_r: Positive integer parameter related to the width of the
+        scattering lobe in the direction of the specular reflection
 
-    :param alpha_i: Parameter related to the width of the scattering lobe
-        in the incoming direction
+    :param alpha_i: Positive integer parameter related to the width of the
+        scattering lobe in the incoming direction
 
     :param lambda_: Parameter determining the percentage of the diffusely
-        reflected energy in the lobe around the specular reflection
+        reflected energy in the lobe around the specular reflection.
+        Must be in the range :math:`[0,1]`
 
     Example
     -------
@@ -273,6 +275,10 @@ class BackscatteringPattern(ScatteringPattern):
 
     @alpha_r.setter
     def alpha_r(self, v):
+        if isinstance(v, bool) or not isinstance(v, Integral):
+            raise TypeError("`alpha_r` must be an integer")
+        if v < 1:
+            raise ValueError("`alpha_r` must be greater than or equal to one")
         self._alpha_r = int(v)
 
     @property
@@ -285,6 +291,10 @@ class BackscatteringPattern(ScatteringPattern):
 
     @alpha_i.setter
     def alpha_i(self, v):
+        if isinstance(v, bool) or not isinstance(v, Integral):
+            raise TypeError("`alpha_i` must be an integer")
+        if v < 1:
+            raise ValueError("`alpha_i` must be greater than or equal to one")
         self._alpha_i = int(v)
 
     @property
@@ -297,11 +307,10 @@ class BackscatteringPattern(ScatteringPattern):
 
     @lambda_.setter
     def lambda_(self, v):
-        self._lambda_ = mi.Float(v)
-
-    @alpha_i.setter
-    def alpha_i(self, v):
-        self._alpha_i = int(v)
+        v = mi.Float(v)
+        if dr.any(~dr.isfinite(v) | (v < 0.) | (v > 1.)):
+            raise ValueError("`lambda_` must be in the range [0,1]")
+        self._lambda_ = v
 
     def __call__(self,
                  ki_local: mi.Vector3f,
@@ -397,8 +406,8 @@ class DirectivePattern(BackscatteringPattern):
     Directive scattering model from :cite:p:`Degli-Esposti07` as given in
     :eq:`directive_model`
 
-    :param alpha_r: Parameter related to the width of the scattering lobe
-        in the direction of the specular reflection
+    :param alpha_r: Positive integer parameter related to the width of the
+        scattering lobe in the direction of the specular reflection
 
     Example
     -------

@@ -363,7 +363,7 @@ def test_specular_suffixes():
 def test_specular_chains_diffraction_1():
     r"""
     Test paths consisting of specular reflections, refractions, and diffraction.
-    Only edge diffraction  is tested.
+    Only edge diffraction is tested.
     """
 
     sources, targets, int_types, vertices, normals, edge_vecs\

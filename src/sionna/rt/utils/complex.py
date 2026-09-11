@@ -26,13 +26,13 @@ def cpx_sub(
     a: Tuple[mi.TensorXf, mi.TensorXf],
     b: Tuple[mi.TensorXf, mi.TensorXf]
 ) -> Tuple[mi.TensorXf, mi.TensorXf]:
-    r"""Element-wise substraction of a complex-valued tensor from another
+    r"""Element-wise subtraction of a complex-valued tensor from another
 
     Each tensor is represented as a tuple of two real-valued tensors,
     corresponding to the real and imaginary part, respectively.
 
     :param a: First tensor
-    :param b: Second tensor which is substracted from the first
+    :param b: Second tensor which is subtracted from the first
     """
     return (a[0] - b[0], a[1] - b[1])
 
@@ -109,7 +109,7 @@ def cpx_abs_square(
 
 def cpx_sqrt(
     x: Tuple[mi.TensorXf, mi.TensorXf]
-) -> mi.TensorXf:
+) -> Tuple[mi.TensorXf, mi.TensorXf]:
     r"""Element-wise square root of a complex-valued tensor
 
     The tensor is represented as a tuple of two real-valued tensors,

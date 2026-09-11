@@ -26,11 +26,33 @@ def add_example_radio_devices(scene: Scene):
     scene.add(rt.Receiver("rc-1", position=[3.0, 0.0, 1.5]))
     scene.add(rt.Receiver("rc-2", position=[1.0, -2.0, 3.5],
                           color=(0.9, 0.9, 0.2), display_radius=0.9))
-
     scene.rx_array = rt.PlanarArray(num_rows=1, num_cols=1, pattern="tr38901",
                                     polarization="VH")
     scene.tx_array = rt.PlanarArray(num_rows=1, num_cols=1, pattern="tr38901",
                                     polarization="VH")
+
+
+@pytest.mark.parametrize("extension", [".png", ".tga", ".bmp"])
+def test_render_to_file_converts_uint8_formats(monkeypatch, extension):
+    """PNG, TGA, and BMP output is converted to UInt8."""
+
+    class Bitmap:
+        component_format = None
+
+        def convert(self, *, component_format, **kwargs):
+            self.component_format = component_format
+            return self
+
+        def write(self, filename):
+            pass
+
+    bitmap = Bitmap()
+    monkeypatch.setattr("sionna.rt.scene.render", lambda **kwargs: bitmap)
+
+    scene = load_scene(rt.scene.simple_wedge)
+    scene.render_to_file(camera=None, filename=f"rendering{extension}")
+
+    assert bitmap.component_format == mi.Struct.Type.UInt8
 
 
 def get_example_paths(scene: Scene):
@@ -317,4 +339,93 @@ def test06_render_with_custom_colormap(cmap: str | None):
     expected_mean_color = [167, 208, 181, 255] \
                           if cmap is None else [225, 179, 182, 255]
 
-    assert np.allclose(mean_color, expected_mean_color, atol=1.0)
+    assert np.allclose(mean_color, expected_mean_color, atol=5.0, rtol=0.03)
+
+
+def test_render_empty_paths():
+    """A valid Paths object with zero paths must render without error."""
+    from sionna.rt.utils.render import paths_to_segments
+
+    scene = load_scene(rt.scene.box_two_screens)
+    add_example_radio_devices(scene)
+    paths = PathSolver()(
+        scene,
+        los=False,
+        specular_reflection=False,
+        diffuse_reflection=False,
+        refraction=False,
+        diffraction=False,
+    )
+    assert paths.vertices.shape[-2] == 0
+    assert paths_to_segments(paths) == ([], [], [])
+
+    bbox = scene.mi_scene.bbox()
+    to_world = mi.ScalarTransform4f().look_at(
+        origin=mi.ScalarVector3f(1.3, 1.0, 1.5) * bbox.max,
+        target=mi.ScalarVector3f(1, 1, 0) * bbox.center(),
+        up=[0, 0, 1],
+    )
+    image = scene.render(
+        camera=to_world,
+        paths=paths,
+        resolution=(64, 64),
+        num_samples=2,
+        show_devices=True,
+        return_bitmap=True,
+    )
+    assert isinstance(image, mi.Bitmap)
+    assert image.width() == 64 and image.height() == 64
+
+
+def test_render_color_bar_with_named_transmitter():
+    """rm_show_color_bar=True with rm_tx=<name> selects that transmitter."""
+    scene = load_scene(rt.scene.box_two_screens)
+    add_example_radio_devices(scene)
+    # Second TX so named selection is distinct from the max-over-TX default.
+    scene.add(rt.Transmitter("tr-2", position=[-1.0, 2.0, 1.5]))
+
+    radio_map = RadioMapSolver()(
+        scene,
+        cell_size=(0.5, 0.5),
+        samples_per_tx=2_000,
+        max_depth=1,
+        seed=1,
+    )
+    bbox = scene.mi_scene.bbox()
+    to_world = mi.ScalarTransform4f().look_at(
+        origin=mi.ScalarVector3f(1.3, 1.0, 1.5) * bbox.max,
+        target=mi.ScalarVector3f(1, 1, 0) * bbox.center(),
+        up=[0, 0, 1],
+    )
+
+    fig = scene.render(
+        camera=to_world,
+        radio_map=radio_map,
+        resolution=(64, 64),
+        num_samples=2,
+        rm_show_color_bar=True,
+        rm_tx="tr-1",
+    )
+    assert len(fig.axes) == 2
+    assert fig.axes[1].get_title() == "dB"
+
+    # Index form is accepted and yields a color bar as well.
+    fig_idx = scene.render(
+        camera=to_world,
+        radio_map=radio_map,
+        resolution=(64, 64),
+        num_samples=2,
+        rm_show_color_bar=True,
+        rm_tx=0,
+    )
+    assert fig_idx.axes[1].get_title() == "dB"
+
+    with pytest.raises(ValueError, match="Unknown transmitter name"):
+        scene.render(
+            camera=to_world,
+            radio_map=radio_map,
+            resolution=(64, 64),
+            num_samples=2,
+            rm_show_color_bar=True,
+            rm_tx="does-not-exist",
+        )

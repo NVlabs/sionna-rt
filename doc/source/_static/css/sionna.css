@@ -61,3 +61,10 @@ div.math {
     overflow-x: auto;
     overflow-y: hidden;
 }
+
+/* MathJax v4 (Sphinx 9): keep horizontal scroll for wide equations,
+   but suppress the spurious vertical scrollbar next to each equation */
+div.math mjx-container {
+    overflow-x: auto;
+    overflow-y: hidden;
+}

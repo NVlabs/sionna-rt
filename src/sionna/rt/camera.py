@@ -12,6 +12,8 @@ import drjit as dr
 import mitsuba as mi
 
 from sionna import rt
+from .constants import EPSILON_FLOAT
+from .utils import look_at_orientation, safe_atan2
 
 
 class Camera:
@@ -34,7 +36,7 @@ class Camera:
     # The convention of Mitsuba for camera is Y as up and look toward Z+.
     # However, Sionna uses Z as up and looks toward X+, for consistency
     # with radio devices.
-    # The following transform peforms a rotation to ensure Sionna's
+    # The following transform performs a rotation to ensure Sionna's
     # convention.
     # Note: rotation angle is specified in degrees.
     mi_to_sionna = (
@@ -46,13 +48,16 @@ class Camera:
         self,
         position: mi.Point3f,
         orientation: mi.Point3f = (0.,0.,0.),
-        look_at: rt.RadioDevice | rt.SceneObject | mi.Poin3f | None = None):
+        look_at: rt.RadioDevice | rt.SceneObject | mi.Point3f | None = None):
         # Keep track of the "to world" transform.
         # Initialized to identity.
         self._to_world = mi.Transform4f()
 
+        orientation = mi.Point3f(orientation)
         if look_at is not None:
-            if orientation != (0., 0., 0.):
+            # Compare via dr.any + bool so mi.Point3f arguments do not trigger
+            # a Dr.Jit Array3b.__bool__() error in the Python `if`.
+            if bool(dr.any(orientation != 0.)):
                 raise ValueError("Cannot specify both `orientation` and"
                                  " `look_at`")
 
@@ -121,9 +126,16 @@ class Camera:
 
         Given a point :math:`\mathbf{x}\in\mathbb{R}^3` with spherical angles
         :math:`\theta` and :math:`\varphi`, the orientation of the camera
-        will be set equal to :math:`(\varphi, \frac{\pi}{2}-\theta, 0.0)`.
+        will be set equal to :math:`(\varphi, \theta-\frac{\pi}{2}, 0.0)`.
+        The world z-axis is used as up direction. For a vertical
+        :math:`\mathbf{x}`, for which the rotation about the local x-axis is
+        not determined by the look-at direction alone, the azimuth is set to
+        :math:`\varphi=0`.
 
         :param target: A position or object to look at.
+
+        :raises ValueError: If ``target`` coincides with the camera position,
+            for which the look-at direction is undefined
         """
         # Get position to look at
         if isinstance(target, (rt.RadioDevice, rt.SceneObject)):
@@ -131,21 +143,11 @@ class Camera:
         else:
             target = mi.Point3f(target)
 
-        # If the position and the target are on a line that is parallel to z,
-        # then the look-at transform is ill-defined as z is up.
-        # In this case, we add a small epsilon to x to avoid this.
-        aligned = rt.isclose(self.position.x, target.x)\
-            & rt.isclose(self.position.y, target.y)
-        aligned = aligned.numpy()[0]
-        if aligned:
-            target.x = target.x + 1e-3
-        # Look-at transform (recall Sionna uses Z-up)
-        self._to_world = mi.Transform4f().look_at(self.position, target,
-                                                  mi.Vector3f(0.0, 0.0, 1.0))
+        self.orientation = look_at_orientation(self.position, target, "camera")
 
     ##############################################
     # Internal methods and class functions.
-    # Should not be appear in the end user
+    # Should not appear in the end user
     # documentation.
     ##############################################
 
@@ -164,6 +166,12 @@ class Camera:
         Extracts the orientation angles `[alpha,beta,gamma]` corresponding to a
         ``to_world`` transform
 
+        When the local x-axis is vertical, the decomposition is degenerate, as
+        only the sum (or the difference) of the rotations about the z- and
+        x-axes is determined. The rotation about the x-axis is then set to zero,
+        which matches the convention of
+        :func:`~sionna.rt.utils.look_at_orientation`.
+
         :param to_world: Transform
         """
 
@@ -172,18 +180,26 @@ class Camera:
         r_mat = to_world.matrix
 
         # Compute angles
-        x_ang = dr.atan2(r_mat[2,1], r_mat[2,2])
-        y_ang = dr.atan2(-r_mat[2,0],
-                         dr.sqrt(dr.square(r_mat[2,1]) + dr.square(r_mat[2,2])))
-        z_ang = dr.atan2(r_mat[1,0], r_mat[0,0])
+        cos_beta = dr.sqrt(dr.square(r_mat[2,1]) + dr.square(r_mat[2,2]))
+        degenerate = cos_beta < EPSILON_FLOAT
+        y_ang = dr.atan2(-r_mat[2,0], dr.select(degenerate, 0., cos_beta))
+
+        # In the degenerate case, the third column of the rotation matrix is
+        # -(cos(alpha+gamma), sin(alpha+gamma), 0) when looking upward, and
+        # (cos(alpha-gamma), sin(alpha-gamma), 0) when looking downward. The
+        # determined combination is assigned to `z_ang`, leaving `x_ang` at zero.
+        s = dr.sign(r_mat[2,0])
+        x_ang = dr.select(degenerate, 0., dr.atan2(r_mat[2,1], r_mat[2,2]))
+        z_ang = dr.select(degenerate,
+                          safe_atan2(-s*r_mat[1,2], -s*r_mat[0,2]),
+                          dr.atan2(r_mat[1,0], r_mat[0,0]))
 
         return mi.Point3f(z_ang, y_ang, x_ang)
 
     @staticmethod
     def world_to_position(to_world: mi.Transform4f) -> mi.Point3f:
         r"""
-        Extracts the translation component of a ``to_world`` transform.
-        If it has multiple entries, throw an exception.
+        Extracts the translation component of a ``to_world`` transform
 
         :param to_world: Transform
         """

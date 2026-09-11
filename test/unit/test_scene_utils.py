@@ -18,6 +18,8 @@ from sionna.rt import load_scene, load_scene_from_string, SceneObject, \
                       RadioMaterial, RadioMaterialBase, ITURadioMaterial, \
                       register_itu_radio_material, register_radio_material, \
                       radio_material_registry
+                      RadioMaterial, RadioMaterialBase, ITURadioMaterial
+from sionna.rt.scene_utils import extend_scene_with_mesh
 
 
 def register_custom_radio_material():
@@ -1024,3 +1026,82 @@ def test12_clone_shallow_parameter_sharing():
 
 
 
+def test_extend_scene_with_mesh_rejects_duplicate_id():
+    scene = mi.load_dict({
+        "type": "scene",
+        "shape-a": {"type": "cube", "id": "shape-a"},
+    })
+    mesh = mi.load_dict({"type": "cube", "id": "shape-a"})
+    with pytest.raises(ValueError, match="already used in the scene"):
+        extend_scene_with_mesh(scene, mesh)
+
+
+def test_extend_scene_with_mesh_adds_unique_id():
+    scene = mi.load_dict({
+        "type": "scene",
+        "shape-a": {"type": "cube", "id": "shape-a"},
+    })
+    mesh = mi.load_dict({"type": "sphere", "id": "shape-b"})
+    extended = extend_scene_with_mesh(scene, mesh)
+    ids = {s.id() for s in extended.shapes()}
+    assert ids == {"shape-a", "shape-b"}
+
+
+def test_scene_edit_add_raw_mitsuba_dict():
+    scene = load_scene(rt.scene.box, merge_shapes=False)
+    n_before = len(scene.objects)
+    kept = next(iter(scene.objects.values()))
+
+    scene.edit(add={
+        "type": "cube",
+        "id": "extra-cube",
+        "to_world": mi.ScalarTransform4f.translate([5, 0, 2]).scale(0.25),
+        "bsdf": {
+            "type": "radio-material",
+            "id": "extra-mat",
+            "relative_permittivity": 3.0,
+            "conductivity": 0.01,
+            "thickness": 0.1,
+        },
+    })
+
+    assert "extra-cube" in scene.objects
+    assert len(scene.objects) == n_before + 1
+    assert isinstance(scene.objects["extra-cube"], SceneObject)
+    # Untouched objects keep identity across the edit.
+    assert scene.objects[kept.name] is kept
+
+    with pytest.raises(ValueError, match="already used in the scene"):
+        scene.edit(add={
+            "type": "cube",
+            "id": "extra-cube",
+            "bsdf": {
+                "type": "radio-material",
+                "id": "extra-mat-2",
+                "relative_permittivity": 2.0,
+                "conductivity": 0.0,
+                "thickness": 0.1,
+            },
+        })
+
+
+def test_use_mi_scene_restores_on_exception():
+    scene = load_scene(rt.scene.box, merge_shapes=False)
+    original = scene.mi_scene
+    other = mi.load_dict({"type": "scene", "sphere": {"type": "sphere"}})
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with scene.use_mi_scene(other):
+            assert scene.mi_scene is other
+            raise RuntimeError("boom")
+
+    assert scene.mi_scene is original
+
+    # Nested contexts restore correctly as well.
+    with scene.use_mi_scene(other):
+        assert scene.mi_scene is other
+        inner = mi.load_dict({"type": "scene", "cube": {"type": "cube"}})
+        with scene.use_mi_scene(inner):
+            assert scene.mi_scene is inner
+        assert scene.mi_scene is other
+    assert scene.mi_scene is original

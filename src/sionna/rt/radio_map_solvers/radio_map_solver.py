@@ -4,14 +4,16 @@
 #
 """Radio map solver"""
 
+from numbers import Integral, Real
+
 import mitsuba as mi
 import drjit as dr
 from typing import Tuple, Callable, List
 
 from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
     rotation_matrix, spectrum_to_matrix_4f, WedgeGeometry,\
-    sample_wedge_diffraction_point, spawn_ray_towards, sample_keller_cone,\
-    spawn_ray_to
+    sample_wedge_diffraction_point, spawn_ray_towards,\
+    sample_keller_cone_with_measure, spawn_ray_to
 from sionna.rt import Scene
 from sionna.rt.antenna_pattern import antenna_pattern_to_world_implicit
 from sionna.rt.constants import InteractionType, MIN_SEGMENT_LENGTH
@@ -110,9 +112,11 @@ class RadioMapSolver:
     Finally, the coefficient for the equivalent SISO channel is given by:
 
     .. math::
-        h_n =  \mathbf{h}_n^{\textsf{H}} \mathbf{p}
+        h_n =  \mathbf{h}_n^{\mathsf{T}} \mathbf{p}
 
     where :math:`\mathbf{p}` denotes the precoding vector ``precoding_vec``.
+    The product is a transpose (not a Hermitian) inner product: ``precoding_vec``
+    is applied without conjugation.
 
     Note
     -----
@@ -188,6 +192,10 @@ class RadioMapSolver:
     # Size of the hash table for the edge intersections
     _WEDGE_INTERSECTIONS_SIZE = 10000
 
+    # Spacing between diffraction sample counters to reduce contention between
+    # atomic writes to adjacent transmitter-wedge entries.
+    _SAMPLE_COUNT_SPREAD_FACTOR = 8
+
     def __init__(self):
         # Sampler
         self._sampler = mi.load_dict({'type': 'independent'})
@@ -241,6 +249,7 @@ class RadioMapSolver:
         rr_depth: int = -1,
         rr_prob: float = 0.95,
         stop_threshold: float | None = None,
+        check_cells_area: bool = False,
         modified_scene: mi.Scene | None = None
     ) -> RadioMap:
         # pylint: disable=line-too-long
@@ -263,11 +272,13 @@ class RadioMapSolver:
             radio map that is parallel to the XY plane.
             If not set to `None`, then ``center`` and ``size`` must be
             provided.
-        :param size:  Size of the radio map measurement plane [m].
+        :param size: Size of the radio map measurement plane [m].
             Ignored if ``measurement_surface`` is provided.
             If set to `None`, then the size of the radio map is set such that
             it covers the entire scene.
             Otherwise, ``center`` and ``orientation`` must be provided.
+            If ``size`` is not an integer multiple of ``cell_size``, it is
+            expanded to ``ceil(size / cell_size) * cell_size``.
         :param cell_size: Size of a cell of the radio map measurement plane [m].
             Ignored if ``measurement_surface`` is provided.
         :param measurement_surface: Measurement surface. If set, the
@@ -279,21 +290,25 @@ class RadioMapSolver:
             complex-valued precoding vector.
             If set to `None`, then defaults to
             :math:`\frac{1}{\sqrt{\text{num\_tx\_ant}}} [1,\dots,1]^{\mathsf{T}}`.
-        :param samples_per_tx: Number of samples per source
-        :param max_depth: Maximum depth
+        :param samples_per_tx: Number of samples per source (``>= 1``)
+        :param max_depth: Maximum depth (``>= 0``)
         :param los: Enable line-of-sight paths
         :param specular_reflection: Enable specular reflections
-        :param diffuse_reflection: Enable diffuse reflectios
+        :param diffuse_reflection: Enable diffuse reflections
         :param refraction: Enable refraction
         :param diffraction: Enable diffraction
         :param edge_diffraction: Enable diffraction on free floating edges
         :param diffraction_lit_region: Enable diffraction in the lit region
-        :param seed: Seed
-        :param rr_depth: Depth from which on to start Russian roulette
+        :param seed: Non-negative seed
+        :param rr_depth: Depth from which on to start Russian roulette.
+            Use ``-1`` to disable Russian roulette.
         :param rr_prob: Maximum probability with which to keep a path when
-            Russian roulette is enabled
+            Russian roulette is enabled. Must lie in ``(0, 1]``.
         :param stop_threshold: Gain threshold [dB] below which a path is
             deactivated
+        :param check_cells_area: If `True` and ``measurement_surface`` is a mesh,
+            reject early surfaces that contain degenerate (zero-area) triangles.
+            Ignored for planar radio maps. Default is `False`.
         :param modified_scene: Advanced parameter. Can be used to provide a
             Mitsuba scene instance that was already extended to contain the
             measurement surface. This can be useful when calling the solver
@@ -302,6 +317,81 @@ class RadioMapSolver:
 
         :return: Computed radio map
         """
+
+        # Validate public arguments before any allocation or sampling
+        if not isinstance(scene, Scene):
+            raise TypeError("`scene` must be an instance of Scene")
+        if (isinstance(samples_per_tx, bool)
+                or not isinstance(samples_per_tx, Integral)):
+            raise TypeError("`samples_per_tx` must be an integer")
+        if samples_per_tx < 1:
+            raise ValueError(
+                "`samples_per_tx` must be greater than or equal to one"
+            )
+        if isinstance(max_depth, bool) or not isinstance(max_depth, Integral):
+            raise TypeError("`max_depth` must be an integer")
+        if max_depth < 0:
+            raise ValueError("`max_depth` must be greater than or equal to zero")
+        if not isinstance(los, bool):
+            raise TypeError("`los` must be a bool")
+        if not isinstance(specular_reflection, bool):
+            raise TypeError("`specular_reflection` must be a bool")
+        if not isinstance(diffuse_reflection, bool):
+            raise TypeError("`diffuse_reflection` must be a bool")
+        if not isinstance(refraction, bool):
+            raise TypeError("`refraction` must be a bool")
+        if not isinstance(diffraction, bool):
+            raise TypeError("`diffraction` must be a bool")
+        if not isinstance(edge_diffraction, bool):
+            raise TypeError("`edge_diffraction` must be a bool")
+        if not isinstance(diffraction_lit_region, bool):
+            raise TypeError("`diffraction_lit_region` must be a bool")
+        if isinstance(seed, bool) or not isinstance(seed, Integral):
+            raise TypeError("`seed` must be an integer")
+        if seed < 0:
+            raise ValueError("`seed` must be greater than or equal to zero")
+        if isinstance(rr_depth, bool) or not isinstance(rr_depth, Integral):
+            raise TypeError("`rr_depth` must be an integer")
+        if rr_depth < -1:
+            raise ValueError(
+                "`rr_depth` must be -1 (disabled) or greater than or equal to "
+                "zero"
+            )
+        if isinstance(rr_prob, bool) or not isinstance(rr_prob, Real):
+            raise TypeError("`rr_prob` must be a real number")
+        if not (0.0 < float(rr_prob) <= 1.0):  # pylint: disable=superfluous-parens
+            raise ValueError("`rr_prob` must lie in the interval (0, 1]")
+        if stop_threshold is not None:
+            if (isinstance(stop_threshold, bool)
+                    or not isinstance(stop_threshold, Real)):
+                raise TypeError(
+                    "`stop_threshold` must be a real number or None"
+                )
+        if not isinstance(check_cells_area, bool):
+            raise TypeError("`check_cells_area` must be a bool")
+        if measurement_surface is not None:
+            if isinstance(measurement_surface, SceneObject):
+                measurement_surface = measurement_surface.mi_mesh
+            if not isinstance(measurement_surface, mi.Mesh):
+                raise TypeError(
+                    "`measurement_surface` must be a Mitsuba Mesh or a "
+                    "SceneObject with a mesh"
+                )
+        if modified_scene is not None:
+            if not isinstance(modified_scene, mi.Scene):
+                raise TypeError("`modified_scene` must be a Mitsuba Scene")
+            if measurement_surface is None:
+                raise ValueError(
+                    "Parameter `modified_scene` should be omitted (or set to "
+                    "None) when using planar radio maps (i.e., "
+                    "`measurement_surface` is None)."
+                )
+            ms_id = measurement_surface.id()
+            if not any(s.id() == ms_id for s in modified_scene.shapes()):
+                raise ValueError(
+                    "`modified_scene` does not contain the provided "
+                    "`measurement_surface`"
+                )
 
         # Check that the scene is all set for simulations
         scene.all_set(radio_map=True)
@@ -315,6 +405,12 @@ class RadioMapSolver:
             precoding_vec_imag = dr.zeros(mi.TensorXf, [num_tx, num_tx_ant])
             precoding_vec = (precoding_vec_real, precoding_vec_imag)
         else:
+            if (not isinstance(precoding_vec, (tuple, list))
+                    or len(precoding_vec) != 2):
+                raise TypeError(
+                    "`precoding_vec` must be a tuple or list of "
+                    "(real, imag) components"
+                )
             precoding_vec_real, precoding_vec_imag = precoding_vec
             if not isinstance(precoding_vec_real, type(precoding_vec_imag)):
                 raise TypeError("The real and imaginary components of "\
@@ -326,6 +422,12 @@ class RadioMapSolver:
                  and len(dr.shape(precoding_vec_real)) == 1) ):
                 precoding_vec_real = mi.Float(precoding_vec_real)
                 precoding_vec_imag = mi.Float(precoding_vec_imag)
+                if (dr.width(precoding_vec_real) != num_tx_ant
+                        or dr.width(precoding_vec_imag) != num_tx_ant):
+                    raise ValueError(
+                        "A shared `precoding_vec` must have length "
+                        f"`num_tx_ant` ({num_tx_ant})"
+                    )
 
                 precoding_vec_real = dr.tile(precoding_vec_real, num_tx)
                 precoding_vec_imag = dr.tile(precoding_vec_imag, num_tx)
@@ -334,7 +436,21 @@ class RadioMapSolver:
                                                 [num_tx, num_tx_ant])
                 precoding_vec_imag = dr.reshape(mi.TensorXf, precoding_vec_imag,
                                                 [num_tx, num_tx_ant])
-                precoding_vec = (precoding_vec_real, precoding_vec_imag)
+            elif not (isinstance(precoding_vec_real, mi.TensorXf)
+                      and isinstance(precoding_vec_imag, mi.TensorXf)):
+                raise TypeError(
+                    "The components of `precoding_vec` must be `mi.Float` "
+                    "or `mi.TensorXf`"
+                )
+            else:
+                expected_shape = [num_tx, num_tx_ant]
+                if (list(dr.shape(precoding_vec_real)) != expected_shape
+                        or list(dr.shape(precoding_vec_imag)) != expected_shape):
+                    raise ValueError(
+                        "`precoding_vec` components must have shape "
+                        f"[num_tx, num_tx_ant] = {expected_shape}"
+                    )
+            precoding_vec = (precoding_vec_real, precoding_vec_imag)
 
         # Transmitter configurations
         # Generates sources positions and orientations
@@ -367,19 +483,15 @@ class RadioMapSolver:
         # Moreover, in this case, the Mitsuba scene is modified by adding the
         # measurement surface to the scene.
         if measurement_surface is not None:
-            if isinstance(measurement_surface, SceneObject):
-                measurement_surface = measurement_surface.mi_mesh
             if modified_scene is None:
-                modified_scene = extend_scene_with_mesh(scene.mi_scene, measurement_surface)
-            radio_map = MeshRadioMap(scene, measurement_surface)
+                modified_scene = extend_scene_with_mesh(scene.mi_scene,
+                                                        measurement_surface)
+            radio_map = MeshRadioMap(scene, measurement_surface,
+                                     check_cells_area=check_cells_area)
         else:
-            if modified_scene is not None:
-                raise ValueError(
-                    "Parameter `modified_scene` should be omitted (or set to None) when using"
-                    " planar radio maps (i.e., `measurement_surface` is None)."
-                )
             modified_scene = scene.mi_scene
-            radio_map = PlanarRadioMap(scene, cell_size, center, orientation, size)
+            radio_map = PlanarRadioMap(scene, cell_size, center, orientation,
+                                       size)
 
         # Computes the pathloss map (except for diffraction)
         # `radio_map` is updated in-place.
@@ -387,7 +499,7 @@ class RadioMapSolver:
         # a fairly significant CPU overhead.
         with dr.scoped_set_flag(dr.JitFlag.OptimizeLoops, False):
             with scene.use_mi_scene(modified_scene):
-                wedges, wedges_counter = self._shoot_and_bounce(
+                wedges = self._shoot_and_bounce(
                     scene, radio_map,
                     self._sampler,
                     tx_positions, tx_orientations,
@@ -403,12 +515,22 @@ class RadioMapSolver:
                     rr_depth, rr_prob, stop_threshold
                 )
 
+                if diffraction:
+                    # Compact the hash table. As `dr.compress` returns occupied
+                    # entries in increasing index order, the resulting wedge order
+                    # is deterministic. Note that this introduces a sync point.
+                    wedge_indices = dr.compress(wedges.length > 0)
+                    wedges = dr.gather(WedgeGeometry, wedges, wedge_indices)
+                    num_wedges = dr.width(wedge_indices)
+                else:
+                    num_wedges = 0
+
                 # Add the contribution of diffracted paths to
                 # the radio map
-                if diffraction and max_depth > 0 and wedges_counter > 0:
+                if diffraction and (max_depth > 0) and (num_wedges > 0):
                     # Reseting the seed of the sampler to ensure its state
                     # was scheduled
-                    self._sampler.seed(seed + 1 , num_samples)
+                    self._sampler.seed(seed + 1, num_samples)
                     self._evaluate_first_order_diffraction(
                         scene,
                         radio_map,
@@ -483,8 +605,7 @@ class RadioMapSolver:
         :param stop_threshold: Gain threshold (linear scale) below which a path
             is deactivated
 
-        :return: Wedge geometry for diffraction and number of wedges or `None`\
-            if diffraction is disabled
+        :return: Wedge geometry for diffraction, or `None` if diffraction is disabled.
         """
 
         num_txs = dr.shape(tx_positions)[1]
@@ -530,16 +651,14 @@ class RadioMapSolver:
         # only first-order diffraction is computed.
         num_hashes = len(self.edge_hash_functions)
         if diffraction_enabled:
-            wedges_counter = [
+            wedges_counters = [
                 dr.zeros(mi.UInt, RadioMapSolver._WEDGE_INTERSECTIONS_SIZE)
                 for _ in range(num_hashes)
             ]
-            next_wedge_ind = mi.UInt(0)
             wedges = WedgeGeometry.build_with_size(
                 RadioMapSolver._WEDGE_INTERSECTIONS_SIZE)
         else:
-            wedges_counter = None
-            next_wedge_ind = None
+            wedges_counters = None
             wedges = None
 
         # Solid angle of the ray tube.
@@ -564,9 +683,9 @@ class RadioMapSolver:
         while dr.hint(active, mode=self.loop_mode, exclude=[
                           array_w, tx_positions, edge_diffraction_enabled,
                           enabled_interactions, los_enabled, max_depth,
-                          next_wedge_ind, num_hashes, num_tx_ant_patterns,
+                          num_hashes, num_tx_ant_patterns,
                           radio_map, rr_depth, rr_prob, scene, self,
-                          stop_threshold, tx_indices, wedges, wedges_counter
+                          stop_threshold, tx_indices, wedges, wedges_counters
                       ]):
 
             # Test intersection with the scene
@@ -582,18 +701,20 @@ class RadioMapSolver:
                     si_scene, ray.o, ray.d, sampler.next_1d(), edge_diffraction_enabled,
                     store_wedges)
                 store_wedges &= valid_wedge_
+
                 # Store wedges
                 for i in range(num_hashes):
                     hash_value = self.edge_hash_functions[i](
-                        wedges_.o, wedges_.o + wedges_.e_hat * wedges_.length
+                        wedges_.o,
+                        wedges_.o + wedges_.e_hat * wedges_.length
                     )
                     counter_ind = hash_value % RadioMapSolver._WEDGE_INTERSECTIONS_SIZE
-                    sample_counter = dr.scatter_inc(wedges_counter[i],
+                    sample_counter = dr.scatter_inc(wedges_counters[i],
                                                     counter_ind, store_wedges)
                     store_wedges &= sample_counter == 0
-                wedge_ind = dr.scatter_inc(next_wedge_ind, mi.UInt(0), store_wedges)
-                store_wedges &= wedge_ind < RadioMapSolver._WEDGE_INTERSECTIONS_SIZE
-                dr.scatter(wedges, wedges_, wedge_ind, store_wedges)
+
+                # Store wedge directly at index corresponding to the last hash.
+                dr.scatter(wedges, wedges_, counter_ind, store_wedges)
 
             # Each interaction processes either an interaction with the scene
             # or an interaction with the measurement plane.
@@ -680,11 +801,13 @@ class RadioMapSolver:
                 ray_tube_length += dr.select(scene_int, si_scene.t, si_mp.t)
 
             # Is the depth threshold to activate Russian roulette reached?
-            rr_inactive = depth < rr_depth
+            # Apply Russian roulette only at scene interactions. Measurement-
+            # surface crossings are pass-through and must neither terminate nor
+            # reweight the ray.
+            rr_inactive = mp_int | (depth < rr_depth)
             # User specify a maximum probability of continuing tracing
             rr_continue_prob = dr.minimum(gain, rr_prob)
-            # Randomly stop tracing of rays
-            rr_continue = scene_int & (sampler.next_1d() < rr_continue_prob)
+            rr_continue = sampler.next_1d() < rr_continue_prob
             active &= (rr_inactive | rr_continue)
 
             # Scale the remaining rays accordingly to ensure an unbiased result
@@ -696,10 +819,9 @@ class RadioMapSolver:
             if dr.hint(stop_threshold is not None, mode="scalar"):
                 gain_pl = gain * dr.square(scene.wavelength
                                            * dr.rcp(4. * dr.pi * ray_tube_length))
-                th_continue = scene_int & (gain_pl > stop_threshold)
-                active &= th_continue
+                active &= mp_int | (gain_pl > stop_threshold)
 
-        return wedges, next_wedge_ind
+        return wedges
 
     @dr.syntax
     def _evaluate_first_order_diffraction(
@@ -747,30 +869,30 @@ class RadioMapSolver:
         #############################################################
 
         # Sample wedges
-        # Wedges are sampled proportionnally to their length
+        # Wedges are sampled proportionally to their length
         total_length = dr.sum(wedges.length)
         wedges_sample_prob = wedges.length / total_length
         dist = mi.DiscreteDistribution(wedges_sample_prob)
         wedges_index = dist.sample(sampler.next_1d())
         sampled_wedges = dr.gather(WedgeGeometry, wedges, wedges_index)
 
-        # Compute the number of samples for each wedge.
-        # To avoid contention, we spread the targets of atomic operations.
-        spread_factor = 8
-        intersections_cnt = dr.zeros(
-            mi.UInt, spread_factor * dr.width(wedges.length)
-        )
-        dr.scatter_add(intersections_cnt, 1, spread_factor * wedges_index)
-        samples_per_wedge = dr.gather(mi.UInt, intersections_cnt,
-                                      spread_factor * wedges_index)
-
-
         tx_indices = dr.repeat(dr.arange(mi.UInt, num_txs), samples_per_tx)
+        samples_per_tx_wedge = self._samples_per_tx_wedge(
+            tx_indices, wedges_index, num_txs, dr.width(wedges.length))
         tx_positions_ = dr.gather(mi.Point3f, tx_positions, tx_indices)
 
+        # Ensure that we sample consistently, regardless of which direction
+        # of the edge was stored in `wedges`.
+        p1 = sampled_wedges.o
+        v2 = sampled_wedges.length * sampled_wedges.e_hat
+        swap_wedges, _, _ = self.edge_hash_functions[-1].should_swap(
+            p1, sampled_wedges.o + v2, apply_quantization=False
+        )
         # Sample points on the wedges
-        diff_point = sampled_wedges.o +\
-            sampler.next_1d() * sampled_wedges.length * sampled_wedges.e_hat
+        sample1 = sampler.next_1d()
+        diff_point = p1 + dr.select(swap_wedges, 1 - sample1, sample1) * v2
+        del p1, v2, sample1
+
         # Direction of incident wave
         ki = dr.normalize(diff_point - tx_positions_)
 
@@ -782,7 +904,7 @@ class RadioMapSolver:
         edge_diffraction = sampled_wedges.primn == sampled_wedges.prim0
         ne = dr.select(edge_diffraction, mi.Vector3f(0),
                   dr.normalize(sampled_wedges.n0 + sampled_wedges.nn))
-        diff_point_offset = diff_point + 5e-2*ne
+        diff_point_offset = diff_point + 5e-2 * ne
 
         #############################################################
         # Initialize the electric field and array weighting
@@ -836,9 +958,11 @@ class RadioMapSolver:
         # Sample Keller cone
         #############################################################
 
-        ko = sample_keller_cone(sampled_wedges.e_hat, sampled_wedges.n0,
-                                sampled_wedges.nn, sampler.next_1d(), ki,
-                                diffraction_lit_region)
+        sample1 = sampler.next_1d()
+        ko, diffraction_angular_measure = sample_keller_cone_with_measure(
+            sampled_wedges.e_hat, sampled_wedges.n0, sampled_wedges.nn,
+            dr.select(swap_wedges, 1 - sample1, sample1),
+            ki, diffraction_lit_region)
 
         #############################################################
         # Add path to radio map
@@ -902,13 +1026,13 @@ class RadioMapSolver:
 
             # Compute the diffracted field
             shape = mi.ShapePtr(sampled_wedges.shape)
-            e_fields = self._evaluate_radio_material_diffraction(
+            diffracted_e_fields = self._evaluate_radio_material_diffraction(
                 shape, sampled_wedges, diff_point, ki, ko, e_fields,
                 s, s_prime, add_to_rm
             )
 
             # Add contribution to the radio map
-            radio_map.add_paths(e_fields,
+            radio_map.add_paths(diffracted_e_fields,
                                 array_w,
                                 si_mp,
                                 ko,
@@ -919,13 +1043,41 @@ class RadioMapSolver:
                                 tx_positions,
                                 sampled_wedges,
                                 diff_point,
-                                samples_per_wedge)
+                                samples_per_tx_wedge,
+                                diffraction_angular_measure)
 
             # Spawn new rays
             ray_mp = si_mp.spawn_ray(ko)
             vis_ray2 = si_vis.spawn_ray(ko)
 
             del si_mp, si_vis
+
+    @staticmethod
+    def _samples_per_tx_wedge(
+        tx_indices: mi.UInt,
+        wedges_index: mi.UInt,
+        num_txs: int,
+        num_wedges: int,
+    ) -> mi.UInt:
+        """
+        Counts samples independently for each transmitter and wedge.
+
+        :param tx_indices: Transmitter index of every sample
+        :param wedges_index: Wedge index of every sample
+        :param num_txs: Number of transmitters
+        :param num_wedges: Number of wedges
+        :return: Number of samples associated with the same transmitter and
+            wedge as each input sample
+        """
+        tx_wedge_index = tx_indices * dr.opaque(mi.UInt, num_wedges) + wedges_index
+        count_index = (RadioMapSolver._SAMPLE_COUNT_SPREAD_FACTOR
+                       * tx_wedge_index)
+        counts = dr.zeros(
+            mi.UInt,
+            RadioMapSolver._SAMPLE_COUNT_SPREAD_FACTOR * num_txs * num_wedges,
+        )
+        dr.scatter_add(counts, 1, count_index)
+        return dr.gather(mi.UInt, counts, count_index)
 
     @dr.syntax
     def _synthetic_array_weighting(
@@ -1114,8 +1266,8 @@ class RadioMapSolver:
         ) -> Tuple[mi.Vector4f]:
         # pylint: disable=line-too-long
         r"""
-        Evaluates the radio material for diffraction and updates the electric
-        field accordingly
+        Evaluates the radio material for diffraction and returns the resulting
+        electric field
 
         :param shape: Intersected shape
         :param wedges: Geometry of the intersected wedges
@@ -1138,7 +1290,7 @@ class RadioMapSolver:
         si = dr.zeros(mi.SurfaceInteraction3f, shape.shape[0])
         ctx = mi.BSDFContext(mode=mi.TransportMode.Importance,
                              type_mask=0, component=0)
-        # If diffraction is globally disabled, we can avoid runing the related code to
+        # If diffraction is globally disabled, we can avoid running the related code to
         # speed up the computation
         ctx.component |= InteractionType.DIFFRACTION
 
@@ -1169,10 +1321,11 @@ class RadioMapSolver:
                                s_prime,
                                dr.reinterpret_array(mi.Float, enabled_interactions))
 
-        # Update the fields
+        # Compute the diffracted fields
+        diffracted_e_fields = []
         # Spreading factor
         sf = dr.rsqrt(s*s_prime*(s + s_prime))
-        for i, e_field in enumerate(e_fields):
+        for e_field in e_fields:
             # `si.duv_dx` and `si.duv_dy` stores the incident field
             si.duv_dx = mi.Vector2f(e_field.x, # S
                                     e_field.y) # P
@@ -1183,27 +1336,8 @@ class RadioMapSolver:
             jones_mat = rm.eval(ctx, si, ko_world, active)
             jones_mat = spectrum_to_matrix_4f(jones_mat)
             jones_mat *= sf
-            # Update the field by applying the Jones matrix
-            e_fields[i] = dr.select(active, jones_mat@e_field, e_field)
+            # Apply the Jones matrix
+            diffracted_e_fields.append(
+                dr.select(active, jones_mat@e_field, e_field))
 
-        return e_fields
-
-    def _hash_edge_index(
-        self,
-        shape_ind: mi.UInt,
-        prim_ind: mi.UInt,
-        local_edge_ind: mi.UInt
-        ) -> mi.UInt:
-        r"""
-        Hashes an edge indexed by a shape, primitive, and local edge index
-        into a single integer
-
-        :param shape_ind: Shape index
-        :param prim_ind: Primitive index
-        :param local_edge_ind: Local edge index
-        """
-        hash_value = 101
-        hash_value = hash_value * 1009 + shape_ind
-        hash_value = hash_value * 9176 + prim_ind
-        hash_value = hash_value * 92821 + local_edge_ind
-        return hash_value
+        return diffracted_e_fields

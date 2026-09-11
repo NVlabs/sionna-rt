@@ -7,6 +7,8 @@
 import mitsuba as mi
 from typing import Tuple, Callable, Mapping
 
+from sionna.rt.constants import DEFAULT_THICKNESS
+
 from .itu import itu_material, ITU_MATERIALS_PROPERTIES
 from .radio_material import RadioMaterial
 from .scattering_pattern import scattering_pattern_registry
@@ -41,12 +43,21 @@ class ITURadioMaterial(RadioMaterial):
     provided that will be passed to the scattering pattern as keyword
     arguments.
 
-    :param name: Unique name of the material. Ignored if ``props`` is provided.
-    :param itu_type: Type the ITU material. The available materials are listed in :ref:`the corresponding table <provided-materials>`. Ignored if ``props`` is provided.
-    :param thickness: Thickness of the material [m]. Ignored if ``props`` is provided.
+    :param name: Unique name of the material. Required if ``props`` is not
+        provided. Ignored if ``props`` is provided.
+    :param itu_type: Type of the ITU material. Required if ``props`` is not
+        provided. The available materials are listed in
+        :ref:`the corresponding table <provided-materials>`.
+        Ignored if ``props`` is provided.
+    :param thickness: Thickness of the material [m]. If :py:class:`None`, the
+        default material thickness is used. Ignored if ``props`` is provided.
     :param scattering_coefficient: Scattering coefficient :math:`S\in[0,1]` as defined in :eq:`scattering_coefficient`. Ignored if ``props`` is provided.
     :param xpd_coefficient:  Cross-polarization discrimination coefficient :math:`K_x\in[0,1]` as defined in :eq:`xpd`. Only relevant if ``scattering_coefficient`` is not equal to zero. Ignored if ``props`` is provided.
-    :param scattering_pattern: Scattering pattern to use for diffuse reflection. Only relevant if ``scattering_coefficient`` is not equal to zero. Ignored if ``props`` is provided. Defaults to :func:`~sionna.rt.lambertian_pattern`.
+    :param scattering_pattern: Name of a registered scattering pattern for
+        diffuse reflections
+        :list-registry:`sionna.rt.radio_materials.scattering_pattern_registry`.
+        Only relevant if ``scattering_coefficient`` is not equal to zero.
+        Defaults to ``"lambertian"``. Ignored if ``props`` is provided.
     :param color: RGB (red, green, blue) color for the radio material as displayed in the previewer and renderer. Each RGB component must have a value within the range :math:`[0,1]`. If set to :py:class:`None`, then a random color is used.
     :param props: Mitsuba container storing the material properties, and used when loading a scene to initialize the radio material.
     """
@@ -81,7 +92,7 @@ class ITURadioMaterial(RadioMaterial):
         thickness: float | mi.Float | None = None,
         scattering_coefficient: float | mi.Float = 0.0,
         xpd_coefficient: float | mi.Float = 0.0,
-        scattering_pattern: Callable[[mi.Vector3f, mi.Vector3f, ...], mi.Float] | None = None,
+        scattering_pattern: str = "lambertian",
         color: Tuple[float, float, float] | None = None,
         props: mi.Properties | None = None,
         **kwargs):
@@ -94,7 +105,7 @@ class ITURadioMaterial(RadioMaterial):
             )
             if not direct_args_none:
                 raise ValueError(
-                    "When providing a `props` dictionary, not argument other"
+                    "When providing a `props` dictionary, no argument other"
                     " than `scattering_pattern` and `color` should be provided."
                 )
             if 'type' not in props:
@@ -104,6 +115,15 @@ class ITURadioMaterial(RadioMaterial):
                 )
             itu_type = props['type']
             del props['type']
+        else:
+            if name is None:
+                raise ValueError("`name` is required when `props` is not provided")
+            if itu_type is None:
+                raise ValueError(
+                    "`itu_type` is required when `props` is not provided"
+                )
+            if thickness is None:
+                thickness = DEFAULT_THICKNESS
 
         if itu_type not in ITU_MATERIALS_PROPERTIES:
             raise ValueError(f"Invalid ITU material type \"{itu_type}\"")

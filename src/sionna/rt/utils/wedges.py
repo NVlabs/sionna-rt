@@ -7,6 +7,7 @@
 import drjit as dr
 import mitsuba as mi
 from dataclasses import dataclass
+from typing import Tuple
 
 from sionna.rt.constants import EPSILON_FLOAT
 
@@ -16,11 +17,18 @@ class WedgeGeometry:
     """
     Dataclass storing wedge geometry information
 
+    :param shape: Mesh that owns the wedge faces
     :param prim0: Primitive index of the first face (0-face)
     :param primn: Primitive index of the second face (n-face)
-    :param local_edge: Local edge index within the first face
+    :param local_edge: Local edge index (0, 1, or 2) within the primitive that
+        was passed to :py:func:`wedge_geometry` at construction time. This index
+        is **not** updated by :py:meth:`swap_faces`, so after a face swap it may
+        no longer index an edge of the current ``prim0``. Use it together with
+        the construction-time primitive, or treat ``(o, e_hat, length)`` as the
+        geometric edge identity after orientation changes.
     :param o: Origin of the edge
     :param e_hat: Normalized edge direction vector
+    :param length: Edge length
     :param n0: Normal of the first face
     :param nn: Normal of the second face
     """
@@ -42,9 +50,13 @@ class WedgeGeometry:
         """
         Flips the 0 and n faces
 
+        When ``flip`` is true, swaps ``prim0``/``primn`` and ``n0``/``nn``, and
+        reverses the edge parameterization (``o``, ``e_hat``). ``local_edge`` is
+        left unchanged: it remains the local edge index of the primitive used
+        when this record was built, not of the post-swap ``prim0``.
+
         :param flip: Mask indicating which wedges to flip
         """
-
         n0_ = dr.select(flip, self.nn, self.n0)
         nn_ = dr.select(flip, self.n0, self.nn)
         self.n0 = n0_
@@ -58,6 +70,7 @@ class WedgeGeometry:
         self.o = dr.select(flip, self.o + self.length * self.e_hat,
                            self.o)
         self.e_hat = dr.select(flip, -self.e_hat, self.e_hat)
+
 
 def wedge_other_face(mesh: mi.MeshPtr | mi.Mesh,
                      prim: mi.UInt,
@@ -82,7 +95,7 @@ def wedge_other_face(mesh: mi.MeshPtr | mi.Mesh,
     """
 
     # Global edge index within the mesh
-    edge0 = 3*prim + local_edge
+    edge0 = 3 * prim + local_edge
     # Other face
     edge1 = mesh.opposite_dedge(edge0, active=active)
     primn = dr.select(edge1 != 0xFFFFFFFF, edge1 // 3, prim)
@@ -92,8 +105,7 @@ def wedge_other_face(mesh: mi.MeshPtr | mi.Mesh,
 def wedge_geometry(mesh: mi.MeshPtr | mi.Mesh,
                    prim0: mi.UInt,
                    local_edge0: mi.UInt,
-                   active: bool | mi.Bool =True
-                   ) -> WedgeGeometry:
+                   active: bool | mi.Bool =True) -> WedgeGeometry:
     # pylint: disable=line-too-long
     r"""
     Returns the wedge geometry
@@ -107,10 +119,14 @@ def wedge_geometry(mesh: mi.MeshPtr | mi.Mesh,
 
     :param mesh: The mesh containing the faces and edges
     :param prim0: Primitive index of the first face
-    :param local_edge0: Local edge index within the first face (0, 1, or 2)
+    :param local_edge0: Local edge index within ``prim0`` (0, 1, or 2). Stored
+        as :py:attr:`WedgeGeometry.local_edge` and kept even if
+        :py:meth:`WedgeGeometry.swap_faces` later exchanges the face indices.
     :param active: (Optional) Mask indicating which computations are active
 
-    :return: WedgeGeometry object
+    :return: WedgeGeometry object. For zero-length edges, ``length`` is ``0``
+        and ``e_hat`` falls back to :math:`(0, 0, 1)` so inactive or degenerate
+        lanes stay finite under vectorized evaluation.
     """
 
     # Index of the other face of the wedge
@@ -129,8 +145,8 @@ def wedge_geometry(mesh: mi.MeshPtr | mi.Mesh,
     # Edge length
     length = dr.norm(d)
 
-    # Edge vector
-    e_hat = d*dr.rcp(length)
+    # Edge vector (placeholder direction for collapsed edges)
+    e_hat = dr.select(length > 0, d * dr.rcp(length), mi.Vector3f(0, 0, 1))
 
     # Normal to the faces
     n0 = mesh.face_normal(prim0, active)
@@ -187,13 +203,14 @@ def wedge_interior_angle(n0: mi.Normal3f, nn: mi.Normal3f) -> mi.Float:
     interior_angle = dr.safe_acos(-dr.dot(n0, nn))
     return interior_angle
 
-def sample_wedge_diffraction_point(si: mi.SurfaceInteraction3f,
-                                   ray_origin: mi.Point3f,
-                                   ki_world: mi.Vector3f,
-                                   sample1: mi.Float,
-                                   edge_diffraction: bool,
-                                   active: bool | mi.Bool =True
-                                   ) -> mi.Point3f:
+def sample_wedge_diffraction_point(
+        si: mi.SurfaceInteraction3f,
+        ray_origin: mi.Point3f,
+        ki_world: mi.Vector3f,
+        sample1: mi.Float,
+        edge_diffraction: bool,
+        active: bool | mi.Bool =True
+    ) -> Tuple[mi.Bool, WedgeGeometry, mi.Point3f]:
     # pylint: disable=line-too-long
     r"""
     Samples a diffraction point on the silhouette edge of a mesh from a surface interaction
@@ -204,17 +221,21 @@ def sample_wedge_diffraction_point(si: mi.SurfaceInteraction3f,
     :param si: Surface interaction containing information about the intersected surface
     :param ray_origin: Origin of the incident ray
     :param ki_world: Direction of propagation of the incident wave in the world frame
-    :param sample2: A pair of random numbers in :math:`[0,1]^2` used to sample a point
-        on the silhouette edge
+    :param sample1: Random number in :math:`[0,1)` used to sample a point on the
+        silhouette edge
     :param edge_diffraction: If set to `True`, then diffraction on free floating edges
         is computed. If `False`, only diffraction on edges between different primitives
         is considered.
     :param active: Mask indicating which rays are active. Defaults to `True`.
 
-    :return: A tuple containing:
-        - valid: Boolean mask indicating if a valid diffraction point was found
-        - wedges: Wedge geometry containing edge information for the diffraction point
-        - diff_point: 3D position of the diffraction point on the silhouette edge
+    :return: A tuple ``(valid, wedges, diff_point)`` where:
+        - ``valid``: Boolean mask indicating if a valid diffraction point was found
+        - ``wedges``: Wedge geometry for the diffraction point. Faces may be
+          swapped so the incident direction sees the 0-face; ``local_edge``
+          still indexes the silhouette-sampled primitive (see
+          :py:class:`WedgeGeometry`).
+        - ``diff_point``: 3D position of the diffraction point on the silhouette
+          edge
     """
 
     # Angle [rad] between the normal and the vector along which the point
@@ -253,6 +274,9 @@ def sample_wedge_diffraction_point(si: mi.SurfaceInteraction3f,
 
     wedges = wedge_geometry(mesh, prim0, local_edge0, valid)
     wedges.swap_faces(dr.dot(ki_world, wedges.n0) > 0)
+
+    # Reject collapsed edges (zero length yields a placeholder e_hat)
+    valid &= wedges.length > 0
 
     # The ray origin must be on the exterior of the wedge
     k = ray_origin - diff_point

@@ -15,7 +15,8 @@ In Sionna, radio maps are generated using a :doc:`radio map solver <radio_map_so
 
 Radio maps can be visualized by passing them as arguments to the functions :meth:`~sionna.rt.Scene.render`, :meth:`~sionna.rt.Scene.render_to_file`, or :meth:`~sionna.rt.Scene.preview`. Additionally, :class:`~sionna.rt.PlanarRadioMap` features a class method :meth:`~sionna.rt.PlanarRadioMap.show`.
 
-A very useful feature is :meth:`~sionna.rt.RadioMap.sample_positions` which allows sampling
+A very useful feature is :meth:`~sionna.rt.PlanarRadioMap.sample_positions`
+(and the equivalent method on :class:`~sionna.rt.MeshRadioMap`) which allows sampling
 of random positions within the scene that have sufficient path gain, RSS, or SINR from a specific transmitter.
 
 .. autoclass:: sionna.rt.PlanarRadioMap

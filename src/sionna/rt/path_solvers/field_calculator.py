@@ -39,7 +39,7 @@ class FieldCalculator:
 
     def __init__(self):
 
-        # Dr.Jit mode for running the loop that peforms the transportation of
+        # Dr.Jit mode for running the loop that performs the transportation of
         # the electric field.
         # Symbolic mode is the fastest mode but does not currently support
         # backpropagation of gradients
@@ -199,7 +199,7 @@ class FieldCalculator:
         # Direction of the scattered wave is initialized to 0
         ko_world = dr.zeros(mi.Vector3f, num_paths)
 
-        # The following loop transports and update the electric field.
+        # The following loop transports and updates the electric field.
         # The electric field is initialized by the source antenna pattern
         e_fields = [antenna_pattern_to_world_implicit(src_antenna_pattern,
                                                       src_to_world, ki_world,
@@ -208,7 +208,7 @@ class FieldCalculator:
 
         # Solid angle of the ray tube.
         # It is required to compute the diffusely reflected field.
-        # Initialized assuming that all the rays initially spawn from the source
+        # Initialized assuming that all the rays initially spawned from the source
         # share the unit sphere equally, i.e., initialized to
         # 4*PI/samples_per_src.
         # This quantity is also used to account for the fact that paths
@@ -271,7 +271,7 @@ class FieldCalculator:
             last_interaction = active & (next_is_none | last_depth)
 
             # Next vertex
-            # Set to the target position is this is the last interaction
+            # Set to the target position if this is the last interaction
             next_vertex = dr.select(last_interaction,
                                     path_tgt_pos,
                                     paths.get_vertex(depth+1, gather_next))
@@ -409,7 +409,7 @@ class FieldCalculator:
         si = dr.zeros(mi.SurfaceInteraction3f, num_paths)
         ctx = mi.BSDFContext(mode=mi.TransportMode.Importance,
                              type_mask=0, component=0)
-        # If diffraction is globally disabled, we can avoid runing the related code to
+        # If diffraction is globally disabled, we can avoid running the related code to
         # speed up the computation
         if diffraction_enabled:
             ctx.component |= InteractionType.DIFFRACTION
@@ -444,8 +444,10 @@ class FieldCalculator:
 
         # Probability of the event to be sampled
         probs = paths.get_prob(depth, active)
-        # Scale the solid angle accordingly
-        solid_angle[active] *= dr.rcp(probs)
+        # Scale the solid angle accordingly. A zero probability (no available
+        # interaction) must not produce an infinite solid angle; it contributes
+        # nothing and is handled by the NONE event path.
+        solid_angle[active] *= dr.select(probs > 0., dr.rcp(probs), mi.Float(0.))
 
         # Update the fields
         for i, e_field in enumerate(e_fields):

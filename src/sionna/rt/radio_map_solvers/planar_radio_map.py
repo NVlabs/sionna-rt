@@ -14,8 +14,7 @@ from matplotlib.colors import from_levels_and_colors
 import mitsuba as mi
 import numpy as np
 
-from sionna.rt.utils import watt_to_dbm, log10, rotation_matrix,\
-    WedgeGeometry, wedge_interior_angle
+from sionna.rt.utils import watt_to_dbm, log10, rotation_matrix, WedgeGeometry
 from sionna.rt.scene import Scene
 from sionna.rt.constants import DEFAULT_TRANSMITTER_COLOR,\
     DEFAULT_RECEIVER_COLOR
@@ -39,7 +38,10 @@ class PlanarRadioMap(RadioMap):
         :math:`(\alpha, \beta, \gamma)` specified through three angles
         corresponding to a 3D rotation as defined in :eq:`rotation`
 
-    :param size:  Size of the radio map [m]
+    :param size: Minimum size of the radio map [m]. If ``size`` is not an
+        integer multiple of ``cell_size``, it is expanded to
+        ``ceil(size / cell_size) * cell_size`` so that every cell has exactly
+        the requested extent.
 
     :param cell_size: Size of a cell of the radio map [m]
     """
@@ -52,6 +54,10 @@ class PlanarRadioMap(RadioMap):
                  size: mi.Point2f | None = None):
 
         super().__init__(scene)
+
+        cell_size = mi.Point2f(cell_size)
+        if (cell_size.x[0] <= 0) or (cell_size.y[0] <= 0):
+            raise ValueError("`cell_size` entries must be positive")
 
         # Check the properties of the rectangle defining the radio map
         if ((center is None) and (size is None) and (orientation is None)):
@@ -82,14 +88,21 @@ class PlanarRadioMap(RadioMap):
             orientation = mi.Point3f(orientation)
             size = mi.Point2f(size)
 
-        # Number of cells
+        if (size.x[0] <= 0) or (size.y[0] <= 0):
+            raise ValueError("`size` entries must be positive")
+
+        # Number of cells and snapped measurement-plane size. Expanding ``size``
+        # to an integer multiple of ``cell_size`` keeps a single cell extent for
+        # the rectangle, cell centers, indexing, sampling offsets, and area
+        # normalization.
         cells_per_dim = mi.Point2u(dr.ceil(size / cell_size))
+        size = mi.Point2f(cells_per_dim) * cell_size
 
         self._cells_per_dim = cells_per_dim
         self._center = mi.Point3f(center)
-        self._cell_size = mi.Point2f(cell_size)
+        self._cell_size = cell_size
         self._orientation = mi.Point3f(orientation)
-        self._size = mi.Point2f(size)
+        self._size = size
 
         self._meas_plane = mi.load_dict({
             'type': 'rectangle',
@@ -105,10 +118,10 @@ class PlanarRadioMap(RadioMap):
 
     @property
     def measurement_surface(self):
-        r"""Mitsuba rectangle corresponding to the
+        r"""Mitsuba rectangle shape corresponding to the
         radio map measurement surface
 
-        :type: :py:class:`mi.Rectangle`
+        :type: :py:class:`mi.Shape`
         """
         return self._meas_plane
 
@@ -134,12 +147,12 @@ class PlanarRadioMap(RadioMap):
         r"""Positions of the centers of the cells in the global coordinate
         system
 
-        :type: :py:class:`mi.TensorXf [cells_per_dim_y, cells_per_dim_x, 3]`
+        :type: ``mi.TensorXf [cells_per_dim_y, cells_per_dim_x, 3]``
         """
         cells_per_dim = self._cells_per_dim
         cell_size = self._cell_size
 
-        # Positions of cell centers in measuement plane coordinate system
+        # Positions of cell centers in measurement plane coordinate system
 
         # [cells_per_dim_x]
         x_positions = dr.arange(mi.Float, 0, cells_per_dim.x[0])
@@ -215,6 +228,10 @@ class PlanarRadioMap(RadioMap):
     def size(self):
         r"""Size of the radio map [m]
 
+        Equal to ``cells_per_dim * cell_size``. May be larger than the size
+        requested at construction when that size was not an integer multiple of
+        ``cell_size``.
+
         :type: :py:class:`mi.Point2f`
         """
         return self._size
@@ -224,7 +241,7 @@ class PlanarRadioMap(RadioMap):
         # pylint: disable=line-too-long
         r"""Path gains across the radio map from all transmitters [unitless, linear scale]
 
-        :type: :py:class:`mi.TensorXf [num_tx, cells_per_dim_y, cells_per_dim_x]`
+        :type: ``mi.TensorXf [num_tx, cells_per_dim_y, cells_per_dim_x]``
         """
         return self._pathgain_map
 
@@ -241,7 +258,8 @@ class PlanarRadioMap(RadioMap):
         tx_positions: mi.Point3f | None = None,
         wedges: WedgeGeometry | None = None,
         diff_point: mi.Point3f | None = None,
-        wedges_samples_cnt: mi.UInt | None = None):
+        wedges_samples_cnt: mi.UInt | None = None,
+        diffraction_angular_measure: mi.Float | None = None):
         # pylint: disable=line-too-long
         r"""
         Adds the contribution of the paths that hit the measurement surface
@@ -252,7 +270,7 @@ class PlanarRadioMap(RadioMap):
         :param e_fields: Electric fields as real-valued vectors of dimension 4
         :param array_w: Weighting used to model the effect of the transmitter
             array
-        :param si: Informations about the interaction with the measurement
+        :param si: Information about the interaction with the measurement
             surface
         :param k_world: Directions of propagation of the incident paths
         :param tx_indices: Indices of the transmitters from which the rays originate
@@ -265,7 +283,11 @@ class PlanarRadioMap(RadioMap):
             Not required for non-diffracted paths.
         :param diff_point: Position of the diffraction point on the wedge.
             Not required for non-diffracted paths.
-        :param wedges_samples_cnt: Number of samples on the wedge.
+        :param wedges_samples_cnt: Number of samples on the wedge for the
+            sample's transmitter.
+            Not required for non-diffracted paths.
+        :param diffraction_angular_measure: Angular measure sampled on the
+            Keller cone.
             Not required for non-diffracted paths.
         """
 
@@ -291,9 +313,8 @@ class PlanarRadioMap(RadioMap):
                                      active=active)
             w = self._diffraction_integration_weight(wedges, tx_positions_,
                                                    diff_point, k_world, si)
-            # Multiply by edge length and exterior angle
-            w *= wedges.length * (dr.two_pi -
-                                 wedge_interior_angle(wedges.n0, wedges.nn))
+            # Multiply by edge length and the angular measure actually sampled
+            w *= wedges.length * diffraction_angular_measure
             # Divide by the number of samples on this edge
             w /= wedges_samples_cnt
 
@@ -316,7 +337,7 @@ class PlanarRadioMap(RadioMap):
     def show(
         self,
         metric: str = "path_gain",
-        tx: int | None = None,
+        tx: int | str | None = None,
         vmin: float | None = None,
         vmax: float | None = None,
         show_tx: bool = True,
@@ -327,10 +348,10 @@ class PlanarRadioMap(RadioMap):
         The position of the transmitters is indicated by "+" markers.
         The positions of the receivers are indicated by "x" markers.
 
-        :param metric: Metric to show
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to show.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
-        :param tx: Index of the transmitter for which to show the radio
+        :param tx: Index or name of the transmitter for which to show the radio
             map. If `None`, the maximum value over all transmitters for each
             cell is shown.
 
@@ -360,7 +381,7 @@ class PlanarRadioMap(RadioMap):
                 tensor = 10. * log10(tensor)
         else:
             with warnings.catch_warnings(record=True) as _:
-                # Convert the signal strengmth to dBm
+                # Convert the signal strength to dBm
                 tensor = watt_to_dbm(tensor)
 
         # Set label
@@ -424,8 +445,8 @@ class PlanarRadioMap(RadioMap):
         The positions of the transmitters and receivers are indicated
         by "+" and "x" markers, respectively.
 
-        :param metric: Metric to show
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to show.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param show_tx: If set to `True`, then the position of the transmitters
             are shown.
@@ -435,8 +456,10 @@ class PlanarRadioMap(RadioMap):
 
         :param color_map: Either the name of a Matplotlib colormap or a NumPy
             array of shape (num_tx, 3) containing the RGB values for the colors
-            of the transmitters. If None, a default color map with the right
-            number of colors is generated.
+            of the transmitters. Listed colormaps use their discrete color
+            list; continuous colormaps are sampled at ``num_tx`` locations. If
+            None, a default color map with the right number of colors is
+            generated.
 
         :return: Figure showing the cell-to-transmitter association
         """
@@ -453,7 +476,13 @@ class PlanarRadioMap(RadioMap):
             # for all transmitters
             colors = mpl.colormaps["rainbow"](np.linspace(0, 1.0, self.num_tx))
         elif isinstance(color_map, str):
-            colors = mpl.colormaps[color_map].colors
+            cmap = mpl.colormaps[color_map]
+            # Listed colormaps expose a finite `.colors` table; continuous ones
+            # do not and must be sampled as callables.
+            if hasattr(cmap, "colors"):
+                colors = cmap.colors
+            else:
+                colors = cmap(np.linspace(0, 1.0, self.num_tx))
         else:
             colors = color_map
         del color_map
@@ -504,8 +533,8 @@ class PlanarRadioMap(RadioMap):
         metric, such as path gain, received signal strength (RSS), or
         SINR.
 
-        :param metric: Metric to be used
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be used.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :return: Cell-to-transmitter association
         """
@@ -528,7 +557,7 @@ class PlanarRadioMap(RadioMap):
         tx_association: bool = True,
         center_pos: bool = False,
         seed: int = 1
-    ) -> Tuple[mi.TensorXf, mi.TensorXu]:
+    ) -> Tuple[mi.TensorXf, mi.TensorXu, mi.TensorXu]:
         # pylint: disable=line-too-long
         r"""Samples random user positions in a scene based on a radio map
 
@@ -541,6 +570,11 @@ class PlanarRadioMap(RadioMap):
         for which the selected metric is the highest across all transmitters.
         This is useful if one wants to ensure, e.g., that the sampled positions
         for each transmitter provide the highest SINR or RSS.
+
+        If no cell satisfies the constraints for a transmitter, that
+        transmitter contributes no samples: the corresponding entry of
+        ``num_valid`` is zero, the matching positions are set to NaN, and the
+        matching cell indices are undefined and must not be used.
 
         Note that due to the quantization of the radio map into cells it is
         not guaranteed that all above parameters are exactly fulfilled for a
@@ -577,8 +611,8 @@ class PlanarRadioMap(RadioMap):
             solver = RadioMapSolver()
             rm = solver(scene, cell_size=(1., 1.), samples_per_tx=100000000)
 
-            positions,_ = rm.sample_positions(num_pos=200, min_val_db=-100.,
-                                            min_dist=50., max_dist=80.)
+            positions, _, num_valid = rm.sample_positions(
+                num_pos=200, min_val_db=-100., min_dist=50., max_dist=80.)
             positions = positions.numpy()
             positions = np.squeeze(positions, axis=0)
 
@@ -603,8 +637,8 @@ class PlanarRadioMap(RadioMap):
 
         :param num_pos: Number of returned random positions for each transmitter
 
-        :param metric: Metric to be considered for sampling positions
-        :type metric: "path_gain" | "rss" | "sinr"
+        :param metric: Metric to be considered for sampling positions.
+            One of ``"path_gain"``, ``"rss"``, or ``"sinr"``.
 
         :param min_val_db: Minimum value for the selected metric ([dB] for path
             gain and SINR; [dBm] for RSS).
@@ -634,19 +668,27 @@ class PlanarRadioMap(RadioMap):
             positions are randomly drawn from the surface of the cell.
 
         :return: Random positions :math:`(x,y,z)` [m]
-            (shape: :py:class:`[num_tx, num_pos, 3]`) that are in cells
-            fulfilling the configured constraints
+            (shape: ``[num_tx, num_pos, 3]``). For transmitter ``n``,
+            only the first ``num_valid[n]`` entries are valid; the remaining
+            entries are NaN when ``num_valid[n] == 0``.
 
-        :return: Cell indices (shape :py:class:`[num_tx, num_pos, 2]`)
-            corresponding to the random positions in the format `(column, row)`
+        :return: Cell indices (shape ``[num_tx, num_pos, 2]``)
+            corresponding to the random positions in the format `(row, column)`.
+            Entries beyond ``num_valid[n]`` are undefined.
+
+        :return: Number of valid samples per transmitter
+            (shape ``[num_tx]``)
         """
 
-        sampled_cells = super().sample_cells(num_pos,
+        sampled_cells, num_valid = super().sample_cells(num_pos,
                                              metric,
                                              min_val_db, max_val_db,
                                              min_dist, max_dist,
                                              tx_association,
                                              seed)
+
+        # Per-sample validity mask: [num_tx * num_pos]
+        valid = dr.repeat(mi.Bool(num_valid.array > 0), num_pos)
 
         # Centers of selected cells
         cell_centers_tensor = self.cell_centers
@@ -654,41 +696,35 @@ class PlanarRadioMap(RadioMap):
                                   cell_centers_tensor[..., 1].array,
                                   cell_centers_tensor[..., 2].array)
         sampled_pos = dr.gather(mi.Point3f, cell_centers,
-                                dr.ravel(sampled_cells))
+                                dr.ravel(sampled_cells), active=valid)
+        sampled_pos = dr.select(valid, sampled_pos,
+                                mi.Point3f(dr.nan))
 
         if not center_pos:
             # Directions with respect to which to apply the offset
             to_world = rotation_matrix(self._orientation)
-            x_dir = to_world @ mi.Vector3f(
-                0.5 * self._size.x / mi.Float(self._cells_per_dim.x),
-                0,
-                0
-            )
-            y_dir = to_world @ mi.Vector3f(
-                0,
-                0.5 * self._size.y / mi.Float(self._cells_per_dim.y),
-                0
-            )
+            x_dir = to_world @ mi.Vector3f(0.5 * self._cell_size.x, 0, 0)
+            y_dir = to_world @ mi.Vector3f(0, 0.5 * self._cell_size.y, 0)
 
-            # Sample a random offet of each position
+            # Sample a random offset of each position
             self._sampler.seed(seed, num_pos * self.num_tx)
             offset = self._sampler.next_2d() * 2 - 1
             offset = offset.x * x_dir + offset.y * y_dir
-            sampled_pos += offset
+            sampled_pos = dr.select(valid, sampled_pos + offset, sampled_pos)
 
         sampled_pos = dr.reshape(mi.TensorXf, sampled_pos,
                                 [self.num_tx, num_pos, 3])
 
-        # Switch to (column, row) format for cell indices
-        sampled_cells_y = sampled_cells // self.cells_per_dim.x[0] # Column
-        sampled_cells_x = sampled_cells % self.cells_per_dim.x[0] # Row
+        # Switch to (row, column) format for cell indices
+        sampled_cells_y = sampled_cells // self.cells_per_dim.x[0] # Row
+        sampled_cells_x = sampled_cells % self.cells_per_dim.x[0] # Column
         sampled_cells = dr.zeros(mi.TensorXu, [self.num_tx * num_pos, 2])
         sampled_cells[...,0] = sampled_cells_y.array
         sampled_cells[...,1] = sampled_cells_x.array
         sampled_cells = dr.reshape(mi.TensorXu, sampled_cells,
                                 [self.num_tx, num_pos, 2])
 
-        return sampled_pos, sampled_cells
+        return sampled_pos, sampled_cells, num_valid
 
     ###############################################
     # Internal methods
