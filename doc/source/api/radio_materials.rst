@@ -88,6 +88,10 @@ Moreover, by default, the scattering coefficient, :math:`S`, of these materials 
 .. autoclass:: sionna.rt.ITURadioMaterial
     :members:
 
+.. autofunction:: sionna.rt.register_radio_material
+
+.. autofunction:: sionna.rt.register_itu_radio_material
+
 
 Scattering Patterns
 -------------------
