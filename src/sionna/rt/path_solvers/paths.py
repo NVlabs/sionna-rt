@@ -207,7 +207,7 @@ class Paths:
         """
         Flags indicating valid paths
 
-        :type: ``mi.TensorXb [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths]``
+        :type: ``mi.TensorXb [num_rx, num_rx_ant, num_tx, num_tx_ant, num_paths] or [num_rx, num_tx, num_paths]``
         """
         return self._valid
 
