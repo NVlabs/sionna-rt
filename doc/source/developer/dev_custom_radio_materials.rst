@@ -9,7 +9,7 @@ They implement all necessary components to simulate the interaction
 between radio waves and objects composed of specific materials.
 
 Modifying Parameters of Radio Materials
-******************************************
+***************************************
 
 To show how to modify the parameters of radio materials, we start by loading
 a scene that consists only of a single reflector.
@@ -96,7 +96,7 @@ We can see how the reflected path gain increases as the conductivity of the refl
 is set to higher values.
 
 Calibrating Material Parameters Through Gradient Descent
-************************************************************
+********************************************************
 
 We consider a simple example in which we aim to retrieve the conductivity of the
 a radio material through gradient descent.
@@ -234,7 +234,7 @@ obtained using the reference scene instantiated at the beginning of this guide.
         :width: 70 %
 
 Custom Radio Materials
-************************
+**********************
 
 Compared to what was done in the previous section, we will now implement a
 scattering model by defining a new class that inherits from the
@@ -247,7 +247,7 @@ Sionna RT. It is highly recommended to first read the
 radio wave propagation.
 
 Representation of Jones vector and Matrices
-=============================================
+===========================================
 
 As detailed in the `Primer on Electromagnetics <../em_primer.html>`_, a wave phasor
 is typically represented by a Jones vector :math:`\mathbf{E} \in \mathbb{C}^2`.
@@ -279,7 +279,7 @@ write equations.
 However, all implementations use the real-valued representation.
 
 Implicit Basis
-===============
+==============
 
 A wave phasor :math:`\mathbf{E}` is expressed by two arbitrary orthogonal
 polarization directions S and P:
@@ -313,7 +313,7 @@ Moreover, it is required that the result of applying this Jones matrix is a
 Jones vector that also describes the scattered wave using the implicit basis.
 
 The Local Interaction Basis
-=============================
+===========================
 
 Computing the Jones matrix and direction of propagation of the scattered wave
 resulting from an interaction is facilitated in Sionna RT by defining a local
@@ -332,13 +332,13 @@ in the local coordinate system, we therefore have
         :width: 100 %
 
 Mandatory Subclass Methods
-============================
+==========================
 
 Implementing a custom radio material requires defining a class that inherits from
 :class:`~sionna.rt.RadioMaterialBase` and implements the following methods:
 
 `sample()`
------------
+----------
 Samples an interaction type and the direction of propagation of the scattered wave
 (which typically depend on the sampled interaction type).
 This function must return, among others, the sample interaction type, direction
@@ -356,7 +356,7 @@ of incident rays interacting with the material resulting in independently sample
 scattered rays that model well the scattered field.
 
 `eval()`
----------
+--------
 Evaluates the Jones matrix for a given interaction type, direction of incidence,
 and direction of scattering. Compared to :meth:`~sionna.rt.RadioMaterialBase.sample`,
 this method does not sample the material.
@@ -367,17 +367,17 @@ Returns the probability that a given interaction type and direction of scatterin
 are sampled conditioned on a given direction of incidence.
 
 `traverse()`
--------------
+------------
 Traverses the attributes and objects of the material. This method is used to
 record the material parameters, and especially the differentiable parameters.
 
 `to_string()`
---------------
+-------------
 Returns a string describing the material. This is used to "print" the material
 in a humanly readable way.
 
 Implementation of a Simple Radio Material Model
-=================================================
+===============================================
 
 For simplicity, we will start by implementing a scattering model that only
 reflects incident radio waves specularly, and such that the energy of the reflected
@@ -807,7 +807,7 @@ As expected, the gradient is positive as increasing the path gain requires
 increasing :math:`g`.
 
 A More Complex Material Model
-===============================
+=============================
 
 Let's now enhance the previous radio material model by incorporating support for
 refraction, which refers to radio waves passing through the material.
@@ -1160,3 +1160,130 @@ reflected and a transmitted path.
     {'custom-mat-instance': EnhancedCustomRadioMaterial[g=[0.7]]}
 
 Tracing paths can be done as for the previous example.
+
+Registering Custom Radio Materials Before Loading Scenes
+********************************************************
+
+When loading scene files (e.g. exported from Blender), shapes may reference custom radio materials or new ITU material names.
+To allow Sionna RT to recognize and assign these materials automatically during scene loading, you can register them prior to calling :func:`~sionna.rt.load_scene`. While it is possible to register a custom radio material by registering a custom BSDF plugin (see above), it is recommended, for simpler use cases, to use the :func:`~sionna.rt.register_radio_material` function to register a :class:`~sionna.rt.RadioMaterialBase` instance or the :func:`~sionna.rt.register_itu_radio_material` function to register a new ITU material.
+
+Registering Custom RadioMaterial Instances
+==========================================
+
+You can register a :class:`~sionna.rt.RadioMaterialBase` instance using :func:`~sionna.rt.register_radio_material`:
+
+.. code-block:: python
+
+    from sionna.rt import RadioMaterial, register_radio_material, load_scene
+
+    # Instantiate custom radio material
+    my_mat = RadioMaterial("my_custom_mat", relative_permittivity=5.0, conductivity=0.01)
+
+    # Register it so scenes can reference "my_custom_mat"
+    register_radio_material(my_mat)
+
+    # Load scene file referencing "my_custom_mat"
+    scene = load_scene("my_scene.xml")
+
+In the scene file (e.g., ``my_scene.xml``), the BSDF node can explicitly use ``type="radio-material"`` (or a generic BSDF type matching the registered material name):
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="radio-material" id="my_custom_mat"/>
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_mat"/>
+        </shape>
+    </scene>
+
+Registering Custom ITU Radio Materials
+======================================
+
+To define a new ITU material or update parameters of existing ITU materials, use :func:`~sionna.rt.register_itu_radio_material`:
+
+.. code-block:: python
+
+    from sionna.rt import register_itu_radio_material, load_scene
+
+    # Register a custom ITU material with frequency parameters (a, b, c, d) and color
+    register_itu_radio_material(
+        "custom_wood",
+        {(0.1, 100.0): (2.5, 0.0, 0.005, 1.0)},
+        (0.4, 0.2, 0.1)
+    )
+
+    # Load scene referencing "itu_custom_wood"
+    scene = load_scene("my_itu_scene.xml")
+
+In the XML scene file, ITU radio materials can be declared using the explicit ``type="itu-radio-material"`` syntax, specifying the ITU material name via the ``type`` property:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="itu_custom_wood">
+            <string name="type" value="custom_wood"/>
+        </bsdf>
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="itu_custom_wood"/>
+        </shape>
+    </scene>
+
+Note that Sionna RT also supports legacy or Blender exported scenes where the BSDF element ID starts with ``itu_`` or ``mat-itu_`` (e.g. ``<bsdf type="diffuse" id="itu_custom_wood"/>``), which is automatically converted to an ITU radio material during scene preprocessing.
+
+Multiple Material Customizations Referencing the Same ITU Material Type
+-----------------------------------------------------------------------
+
+Using the explicit XML syntax (``type="itu-radio-material"``), you can define multiple distinct BSDF nodes with unique IDs that all reference the same ITU material type (whether built-in or custom registered), while providing different overrides such as thickness or color:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <bsdf type="itu-radio-material" id="my_custom_thick_wood">
+            <string name="type" value="custom_wood"/>
+            <float name="thickness" value="0.25"/>
+        </bsdf>
+
+        <bsdf type="itu-radio-material" id="my_custom_thin_wood">
+            <string name="type" value="custom_wood"/>
+            <float name="thickness" value="0.02"/>
+        </bsdf>
+
+        <shape type="ply" id="thick_wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_thick_wood"/>
+        </shape>
+        <shape type="ply" id="thin_wall">
+            <string name="filename" value="panel.ply"/>
+            <ref name="bsdf" id="my_custom_thin_wood"/>
+        </shape>
+    </scene>
+
+Overriding Material Attributes in Scene Files
+----------------------------------------------
+
+When scene files are loaded, attributes defined in XML BSDF nodes (such as ``thickness``, ``color``, ``conductivity``, ``relative_permittivity``, etc.) can override the predefined attributes of both built-in ITU materials and registered custom radio materials:
+
+.. code-block:: xml
+
+    <scene version="2.1.0">
+        <!-- Thickness, conductivity, and color overrides for a registered RadioMaterial -->
+        <bsdf type="radio-material" id="my_custom_mat">
+            <float name="thickness" value="0.25"/>
+            <float name="conductivity" value="0.05"/>
+            <rgb name="color" value="0.8, 0.2, 0.2"/>
+        </bsdf>
+
+        <shape type="ply" id="wall">
+            <string name="filename" value="wall.ply"/>
+            <ref name="bsdf" id="my_custom_mat"/>
+        </shape>
+    </scene>
+
+When overrides are specified:
+* **Blueprint Immutability**: The blueprint instance in :func:`~sionna.rt.register_radio_material` is never mutated. Instead, an independent clone is created specifically for the loaded scene (see :meth:`~sionna.rt.RadioMaterialBase.clone`).
+* **Shallow Cloning & Gradient Sharing**: Material cloning performs shallow cloning: non-overridden properties share the underlying values and arrays/tensors with the origin material. During differentiable ray tracing, gradients from rays interacting with any clone sharing a parameter will accumulate onto that shared parameter. Because each clone is an independent Python object, updating a parameter on one material after an optimizer step updates that instance's attribute reference; to keep other clones synchronized across optimization steps, their attributes must be updated or re-assigned explicitly.
+* **Instance Deduplication & Merging**: Shapes sharing identical material properties share the exact same :class:`~sionna.rt.RadioMaterialBase` instance in memory. This enables Mitsuba's shape merging mechanism (``merge_shapes=True``) to combine them into a single geometry for optimal ray tracing performance.
+* **Naming in the Scene**: If multiple distinct variations of the same material are defined within a scene, each variation is registered under a unique name in ``scene.radio_materials`` (e.g. ``my_custom_mat``, ``my_custom_mat_1``, etc.).
+* **Logging Notifications**: Material registrations and overrides are logged via the ``sionna.rt`` logger at ``INFO`` level, allowing you to easily track created and overridden material instances.
