@@ -641,8 +641,17 @@ class SBCandidateGenerator:
 
             # If diffraction is sampled, then update the interaction points
             # to the diffraction points and the intersected primitives to the
-            # ones carrying the diffracting edges
-            si.p = dr.select(diffraction, diffr_point, si.p)
+            # ones carrying the diffracting edges.
+
+            # Rays spawned from `si` are offset by Mitsuba along the normal of
+            # the intersected face towards their target. For a wedge wider than 90
+            # degrees, this offset can put the ray origin inside the object.
+            # We thus push out the diffraction point along the bisector of the normals.
+            ne = dr.select(wedges.prim0 == wedges.primn, mi.Vector3f(0),
+                           dr.normalize(wedges.n0 + wedges.nn))
+            diffr_offset = 1.05*(1. + dr.max(dr.abs(diffr_point), axis=0))\
+                * mi.math.RayEpsilon
+            si.p = dr.select(diffraction, diffr_point + diffr_offset*ne, si.p)
             si.prim_index = dr.select(diffraction, wedges.prim0, si.prim_index)
 
             # Set `si.wi` to the direction of propagation of the incident wave in
