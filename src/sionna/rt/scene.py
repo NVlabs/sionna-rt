@@ -32,6 +32,7 @@ from .radio_devices import Transmitter, Receiver
 from .renderer import render
 from .scene_utils import edit_scene_shapes, process_xml
 from .utils import radio_map_color_mapping
+from .utils.misc import check_mitsuba_variant
 from . import scenes
 
 
@@ -986,6 +987,9 @@ class Scene:
 
         :param radio_map: Set to `True` if checking for radio map computation. Set to `False` otherwise.
         """
+
+        # Ensure the current Mitsuba variant is supported.
+        check_mitsuba_variant()
 
         if self.tx_array is None:
             raise ValueError("Transmitter array not set")

@@ -201,6 +201,7 @@ class PathSolver:
         """
 
         # Validate public arguments before any allocation or sampling
+        # Ensure the configured Mitsuba variant is supported by Sionna RT
         if not isinstance(scene, Scene):
             raise TypeError("`scene` must be an instance of Scene")
         if isinstance(max_depth, bool) or not isinstance(max_depth, Integral):

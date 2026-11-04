@@ -198,3 +198,27 @@ def cot(x: mi.Float) -> mi.Float:
     :param x: Input value
     """
     return dr.rcp(dr.tan(x))
+
+def check_mitsuba_variant() -> None:
+    r"""
+    Verifies that the configured Mitsuba variant is supported by Sionna RT
+
+    Sionna RT requires a Mitsuba variant of the ``*_mono_polarized`` family
+    for polarized radio propagation. If another variant is configured when a
+    solver is executed, this function raises a `RuntimeError` that explains
+    how to fix the configuration, instead of letting the computation fail
+    later with an unrelated low-level error.
+
+    :raises RuntimeError: If the configured Mitsuba variant does not belong
+        to the ``*_mono_polarized`` family
+    """
+    variant = mi.variant()
+    if (variant is not None) and ("mono_polarized" not in variant):
+        raise RuntimeError(
+            "The configured Mitsuba variant "
+            f"'{variant}' is not supported by Sionna RT, which requires a "
+            "`*_mono_polarized` variant, such as 'cuda_ad_mono_polarized'. "
+            "If no variant is configured when Sionna RT is imported, a "
+            "suitable one is selected automatically. Use "
+            "`mitsuba.set_variant()` to configure a supported variant."
+        )
