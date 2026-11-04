@@ -23,7 +23,6 @@ from .radio_map import RadioMap
 from .planar_radio_map import PlanarRadioMap
 from .mesh_radio_map import MeshRadioMap
 from sionna.rt.utils.hashing import EdgeHasher
-from sionna.rt.utils.misc import check_mitsuba_variant
 
 
 class RadioMapSolver:
@@ -321,7 +320,6 @@ class RadioMapSolver:
 
         # Validate public arguments before any allocation or sampling
         # Ensure the configured Mitsuba variant is supported by Sionna RT
-        check_mitsuba_variant()
         if not isinstance(scene, Scene):
             raise TypeError("`scene` must be an instance of Scene")
         if (isinstance(samples_per_tx, bool)

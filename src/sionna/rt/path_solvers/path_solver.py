@@ -14,7 +14,6 @@ from .image_method import ImageMethod
 from .field_calculator import FieldCalculator
 from .paths import Paths
 from sionna.rt import Scene
-from sionna.rt.utils.misc import check_mitsuba_variant
 
 
 class PathSolver:
@@ -203,7 +202,6 @@ class PathSolver:
 
         # Validate public arguments before any allocation or sampling
         # Ensure the configured Mitsuba variant is supported by Sionna RT
-        check_mitsuba_variant()
         if not isinstance(scene, Scene):
             raise TypeError("`scene` must be an instance of Scene")
         if isinstance(max_depth, bool) or not isinstance(max_depth, Integral):
