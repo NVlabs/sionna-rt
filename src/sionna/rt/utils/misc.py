@@ -213,7 +213,7 @@ def check_mitsuba_variant() -> None:
         to the ``*_mono_polarized`` family
     """
     variant = mi.variant()
-    if (variant is not None) and ("mono_polarized" not in variant):
+    if (variant is None) or ("mono_polarized" not in variant):
         raise RuntimeError(
             "The configured Mitsuba variant "
             f"'{variant}' is not supported by Sionna RT, which requires a "
