@@ -203,14 +203,18 @@ class SBCandidateGenerator:
         rays = spawn_ray_to(origins, targets)
         valid &= ~mi_scene.ray_test(rays, active=valid)
 
-        # Store the paths
-        # Index where to store the current path.
-        path_ind = dr.scatter_inc(paths.paths_counter, mi.UInt(0), valid)
+        # Count all attempted LoS candidates, but reserve at most each source's
+        # share of the buffer. Otherwise, excess LoS paths from one source can
+        # consume another source's slots and make later reflected paths write
+        # past the end of the buffer.
+        num_path_per_src = dr.scatter_inc(paths_counter_per_source,
+                                          samples_data.src_indices, valid)
+        store = valid & (num_path_per_src < paths.buffer_size // num_src)
+
+        # The shared counter counts stored candidates, not attempted writes.
+        path_ind = dr.scatter_inc(paths.paths_counter, mi.UInt(0), store)
         paths.add_paths(mi.UInt(0), path_ind, samples_data, valid, tgt_indices,
-                        rays.d, -rays.d, valid)
-        # Increment the sources counters
-        dr.scatter_inc(paths_counter_per_source, samples_data.src_indices,
-                       valid)
+                        rays.d, -rays.d, store)
 
     def _shoot_and_bounce(self,
                           mi_scene: mi.Scene,
