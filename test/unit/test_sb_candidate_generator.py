@@ -4,6 +4,7 @@
 #
 
 import pytest
+from functools import partial
 import drjit as dr
 import mitsuba as mi
 import numpy as np
@@ -16,7 +17,12 @@ from sionna.rt.path_solvers.sb_candidate_generator import SBCandidateGenerator
 from sionna.rt.path_solvers.sb_deterministic import SBDeterministicCandidateGenerator
 
 
-GENERATOR_TYPES = [SBCandidateGenerator, SBDeterministicCandidateGenerator]
+GENERATOR_TYPES = [
+    SBCandidateGenerator,
+    SBDeterministicCandidateGenerator,
+    pytest.param(partial(SBCandidateGenerator, resolve_hash_collisions=True),
+                 id="collision-resolving"),
+]
 
 ############################################################
 # Utilities

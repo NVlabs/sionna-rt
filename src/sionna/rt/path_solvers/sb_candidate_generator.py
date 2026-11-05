@@ -6,6 +6,7 @@
 
 import mitsuba as mi
 import drjit as dr
+from numbers import Integral
 from typing import Tuple
 
 from sionna.rt.constants import InteractionType, MIN_SEGMENT_LENGTH,\
@@ -15,6 +16,7 @@ from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
     PlaneHasher, EdgeHasher, SourceExclusionBoxes
 from .paths_buffer import PathsBuffer
 from .sample_data import SampleData
+from .hash_set import insert_hash
 
 
 class SBCandidateGenerator:
@@ -58,7 +60,23 @@ class SBCandidateGenerator:
     # following constant gives the minimum size of this array per source.
     MIN_SPEC_COUNT_SIZE = int(1e6)
 
-    def __init__(self):
+    def __init__(self, resolve_hash_collisions: bool = False,
+                 hash_table_size: int | None = None):
+
+        if not isinstance(resolve_hash_collisions, bool):
+            raise TypeError("resolve_hash_collisions must be a bool")
+        if hash_table_size is not None:
+            if not resolve_hash_collisions:
+                raise ValueError(
+                    "hash_table_size requires resolve_hash_collisions=True"
+                )
+            if isinstance(hash_table_size, bool) \
+                    or not isinstance(hash_table_size, Integral) \
+                    or hash_table_size < 1:
+                raise ValueError("hash_table_size must be a positive integer")
+        self.resolve_hash_collisions = resolve_hash_collisions
+        self.hash_table_size = hash_table_size
+        self._hash_overflow = dr.zeros(mi.UInt, 1)
 
         # Sampler for generating random numbers
         self._sampler = mi.load_dict({'type': 'independent'})
@@ -110,6 +128,13 @@ class SBCandidateGenerator:
         num_sources = dr.shape(src_positions)[1]
         num_samples = samples_per_src*num_sources
         max_num_paths = max_num_paths_per_src*num_sources
+        self._hash_overflow = dr.zeros(mi.UInt, 1)
+        if self.resolve_hash_collisions:
+            table_size = self.hash_table_size or max(
+                max_num_paths_per_src, self.MIN_SPEC_COUNT_SIZE
+            )
+            if table_size * num_sources >= 2**32:
+                raise ValueError("Hash tables exceed the 32-bit indexing limit")
 
         # Set the seed of the sampler
         self._sampler.seed(seed, num_samples)
@@ -139,6 +164,21 @@ class SBCandidateGenerator:
                     paths_counter_per_source, specular_reflection,
                     diffuse_reflection, refraction, diffraction,
                     edge_diffraction, seed, src_boxes)
+
+        if self.resolve_hash_collisions:
+            # Materialize all CAS-dependent outputs in one evaluation.
+            paths.schedule()
+            dr.eval(self._hash_overflow, paths_counter_per_source)
+            if bool(dr.any(self._hash_overflow != 0)):
+                raise OverflowError(
+                    "Candidate hash-table probe limit reached. Increase "
+                    "hash_table_size or reduce the receiver batch size."
+                )
+            if bool(dr.any(paths_counter_per_source > max_num_paths_per_src)):
+                raise OverflowError(
+                    "Candidate path buffer exhausted. Increase "
+                    "max_num_paths_per_src or reduce the receiver batch size."
+                )
 
         return paths
 
@@ -206,8 +246,13 @@ class SBCandidateGenerator:
         # Store the paths
         # Index where to store the current path.
         path_ind = dr.scatter_inc(paths.paths_counter, mi.UInt(0), valid)
+        store = dr.copy(valid)
+        if dr.hint(self.resolve_hash_collisions, mode="scalar"):
+            # Keep attempted counts for the overflow check, but never write
+            # beyond the buffer while constructing a result we will reject.
+            store &= path_ind < paths.buffer_size
         paths.add_paths(mi.UInt(0), path_ind, samples_data, valid, tgt_indices,
-                        rays.d, -rays.d, valid)
+                        rays.d, -rays.d, store)
         # Increment the sources counters
         dr.scatter_inc(paths_counter_per_source, samples_data.src_indices,
                        valid)
@@ -346,6 +391,15 @@ class SBCandidateGenerator:
                                        SBCandidateGenerator.MIN_SPEC_COUNT_SIZE)
         specular_chain_counters = [dr.zeros(mi.UInt, spec_counter_size*num_sources)
                                    for _ in range(num_hashes)]
+        if dr.hint(self.resolve_hash_collisions, mode="scalar"):
+            spec_counter_size = self.hash_table_size or max(
+                max_num_paths_per_src, self.MIN_SPEC_COUNT_SIZE
+            )
+            specular_chain_counters = [
+                dr.zeros(mi.UInt64, spec_counter_size * num_sources)
+                for _ in range(num_hashes)
+            ]
+        zero_seen = [dr.zeros(mi.UInt, num_sources) for _ in range(num_hashes)]
 
         # Current depth
         depth = dr.full(mi.UInt, 1, num_samples)
@@ -526,9 +580,17 @@ class SBCandidateGenerator:
                     # important to use `new_specular` as the active mask for this
                     # operation. This way, only threads that are considered as new
                     # *so far* will increment the next counter.
-                    samples_counter = dr.scatter_inc(specular_chain_counters[i],
-                                                     counter_ind, new_specular)
-                    new_specular &= samples_counter == 0
+                    if dr.hint(self.resolve_hash_collisions, mode="scalar"):
+                        new_specular = insert_hash(
+                            specular_chain_counters[i], zero_seen[i],
+                            self._hash_overflow, path_target_hash,
+                            samples_data.src_indices, spec_counter_size,
+                            new_specular
+                        )
+                    else:
+                        samples_counter = dr.scatter_inc(specular_chain_counters[i],
+                                                         counter_ind, new_specular)
+                        new_specular &= samples_counter == 0
 
                 # Store the paths
                 store = active & (valid | new_specular)
@@ -550,6 +612,15 @@ class SBCandidateGenerator:
                                 -los_ray.d, store)
 
                 t += 1
+                if dr.hint(self.resolve_hash_collisions, mode="scalar"):
+                    failure_code, _ = dr.scatter_cas(
+                        self._hash_overflow, mi.UInt(0), mi.UInt(0), mi.UInt(0)
+                    )
+                    failed = failure_code != 0
+                    # A failed insertion invalidates this solve. Stop tracing
+                    # instead of repeatedly probing an exhausted hash table.
+                    active &= ~failed
+                    t = dr.select(failed, mi.UInt(num_targets), t)
 
             ####################################
             # Prepare next iteration

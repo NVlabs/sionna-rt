@@ -119,20 +119,41 @@ class PathSolver:
         :align: center
     """
 
-    def __init__(self, deterministic: bool = False):
+    def __init__(self, deterministic: bool = False, *,
+                 resolve_hash_collisions: bool = False,
+                 hash_table_size: int | None = None):
         """
         Instantiates the path solver.
 
         :param deterministic: Enable deterministic path generation. There should
                               be little to no effect on latency, however memory
                               usage will be increased.
+        :param resolve_hash_collisions: Compare full 64-bit candidate hashes and
+            probe alternate slots on collisions. This increases memory and may
+            increase latency. Hash-table probe exhaustion and candidate-buffer
+            overflow raise :class:`OverflowError` instead of returning a
+            truncated result. Does not guarantee deterministic path ordering
+            or resolve collisions of the full hashes or geometric quantization.
+            Cannot be combined with ``deterministic=True``.
+        :param hash_table_size: Slots per hash table per source in collision-
+            resolving mode. Independent of the candidate path buffer size.
+            Defaults to ``max(max_num_paths_per_src, 1000000)``.
         """
+
+        if deterministic and (resolve_hash_collisions or hash_table_size is not None):
+            raise ValueError(
+                "Collision-resolving deduplication cannot be combined with "
+                "deterministic=True"
+            )
 
         # Instantiate the Candidate Generator
         if deterministic:
             self._candidate_generator = SBDeterministicCandidateGenerator()
         else:
-            self._candidate_generator = SBCandidateGenerator()
+            self._candidate_generator = SBCandidateGenerator(
+                resolve_hash_collisions=resolve_hash_collisions,
+                hash_table_size=hash_table_size
+            )
         # Instantiate the Image Method solver
         self._image_method = ImageMethod()
         # Instantiate the Field Calculator
