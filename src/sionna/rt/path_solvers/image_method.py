@@ -553,9 +553,15 @@ class ImageMethod:
                     advance_to_source & (advance < source_distance),
                     advanced, ray_target_offset)
 
-            ray = spawn_ray_to(vertex_offset,
-                               offset_p(ray_target_offset, k, normal_image),
-                               normal)
+            # Diffraction points are already pushed out of the wedge along `ne`.
+            # Offsetting them again along the face normal toward the vertex
+            # would point into the object for a wedge wider than 90 degrees and
+            # a vertex in its shadow, and that offset grows with the distance to
+            # the origin until it outweighs the push along `ne`.
+            ray_target_offset = dr.select(
+                diffraction, ray_target_offset,
+                offset_p(ray_target_offset, k, normal_image))
+            ray = spawn_ray_to(vertex_offset, ray_target_offset, normal)
 
             # The intersection point of `ray` with the scene is the path next
             # vertex if this is a specular reflection or refraction.
