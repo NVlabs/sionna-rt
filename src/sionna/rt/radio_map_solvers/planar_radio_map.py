@@ -5,7 +5,7 @@
 """Planar radio map"""
 
 import warnings
-from typing import Tuple, List
+from typing import Tuple
 
 import drjit as dr
 import matplotlib.pyplot as plt
@@ -245,10 +245,8 @@ class PlanarRadioMap(RadioMap):
         """
         return self._pathgain_map
 
-    def add_paths(
+    def _path_weight(
         self,
-        e_fields: List[mi.Vector4f],
-        array_w: List[mi.Float],
         si: mi.SurfaceInteraction3f,
         k_world: mi.Vector3f,
         tx_indices: mi.UInt,
@@ -259,48 +257,21 @@ class PlanarRadioMap(RadioMap):
         wedges: WedgeGeometry | None = None,
         diff_point: mi.Point3f | None = None,
         wedges_samples_cnt: mi.UInt | None = None,
-        diffraction_angular_measure: mi.Float | None = None):
+        diffraction_angular_measure: mi.Float | None = None
+    ) -> Tuple[mi.UInt, mi.Float, mi.Bool]:
         # pylint: disable=line-too-long
         r"""
-        Adds the contribution of the paths that hit the measurement surface
-        to the radio maps
+        Computes where and with which weight the paths that hit the
+        measurement surface contribute to the path gain map
 
-        The radio maps are updated in place.
-
-        :param e_fields: Electric fields as real-valued vectors of dimension 4
-        :param array_w: Weighting used to model the effect of the transmitter
-            array
-        :param si: Information about the interaction with the measurement
-            surface
-        :param k_world: Directions of propagation of the incident paths
-        :param tx_indices: Indices of the transmitters from which the rays originate
-        :param active: Flags indicating if the paths should be added to the radio map
-        :param diffracted_paths: Flags indicating if the paths are diffracted
-        :param solid_angle: Ray tubes solid angles [sr] for non-diffracted paths.
-            Not required for diffracted paths.
-        :param tx_positions: Positions of the transmitters
-        :param wedges: Properties of the intersected wedges.
-            Not required for non-diffracted paths.
-        :param diff_point: Position of the diffraction point on the wedge.
-            Not required for non-diffracted paths.
-        :param wedges_samples_cnt: Number of samples on the wedge for the
-            sample's transmitter.
-            Not required for non-diffracted paths.
-        :param diffraction_angular_measure: Angular measure sampled on the
-            Keller cone.
-            Not required for non-diffracted paths.
+        See :meth:`~sionna.rt.RadioMap._path_weight` for a description of the
+        parameters and of the returned values.
         """
 
         # Indices of the hit cells
         cell_ind = self._local_to_cell_ind(si.uv)
         # Indices of the item in the tensor storing the radio maps
         tensor_ind = tx_indices * self.cells_count + cell_ind
-
-        # Contribution to the path loss map
-        a = dr.zeros(mi.Vector4f, 1)
-        for e_field, aw in zip(e_fields, array_w):
-            a += aw @ e_field
-        a = dr.squared_norm(a)
 
         # Ray weight for non-diffracted paths
         if not diffracted_paths:
@@ -318,12 +289,10 @@ class PlanarRadioMap(RadioMap):
             # Divide by the number of samples on this edge
             w /= wedges_samples_cnt
 
-        # Apply ray weight and normalization factor
-        a *= w * self._normalization_factor
+        # Apply normalization factor
+        w *= self._normalization_factor
 
-        # Update the path loss map
-        dr.scatter_reduce(dr.ReduceOp.Add, self._pathgain_map.array, value=a,
-                          index=tensor_ind, active=active)
+        return tensor_ind, w, active
 
     @property
     def to_world(self):

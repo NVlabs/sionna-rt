@@ -1376,3 +1376,250 @@ def test_show_association(color_map):
         scene.render_to_file(camera=to_world, filename=fname, radio_map=rm,
                              clip_at=0.5 * bbox.max.z)
         print(f"Saved rendering to: {fname}")
+
+
+####################################################
+# Multiple precoding vectors
+####################################################
+
+def _setup_precoding_scene(num_tx, polarization="V", pattern="iso",
+                           scene_name="simple_reflector"):
+    """Scene with a 2x2 array and ``num_tx`` transmitters"""
+    scene = load_scene(getattr(rt.scene, scene_name), merge_shapes=False)
+    scene.tx_array = PlanarArray(num_rows=2,
+                                 num_cols=2,
+                                 vertical_spacing=0.5,
+                                 horizontal_spacing=0.5,
+                                 pattern=pattern,
+                                 polarization=polarization)
+    for i in range(num_tx):
+        scene.add(Transmitter(name=f"tx-{i}",
+                              position=mi.Point3f(1. + 0.5*i, 1., 0.1),
+                              orientation=mi.Point3f(0.3*i, 0, 0)))
+    return scene
+
+
+def _solve_precoding(scene, precoding_vec, solver=None, **kwargs):
+    kw = dict(cell_size=mi.Point2f(1, 1),
+              center=mi.Point3f(0, 0, 1),
+              orientation=mi.Point3f(0., 0., 0.),
+              size=mi.Point2f(3, 3),
+              samples_per_tx=int(1e5),
+              max_depth=1,
+              seed=42)
+    if "measurement_surface" in kwargs:
+        for k in ("cell_size", "center", "orientation", "size"):
+            kw.pop(k)
+    kw.update(kwargs)
+    solver = RadioMapSolver() if solver is None else solver
+    return solver(scene, precoding_vec=precoding_vec, **kw)
+
+
+def _random_precoding(num_vecs, num_tx, num_tx_ant, seed=0):
+    """Random precoding vectors as NumPy arrays [num_vecs, num_tx, num_tx_ant]"""
+    rng = np.random.default_rng(seed)
+    real = rng.standard_normal((num_vecs, num_tx, num_tx_ant))
+    imag = rng.standard_normal((num_vecs, num_tx, num_tx_ant))
+    norm = np.sqrt(np.sum(real**2 + imag**2, axis=-1, keepdims=True))
+    return (real/norm).astype(np.float32), (imag/norm).astype(np.float32)
+
+
+def _grid_mesh(n=10, half=20., z=-10.):
+    """Square measurement surface made of ``2*n*n`` triangles"""
+    xs = np.linspace(-half, half, n + 1)
+    vx, vy = np.meshgrid(xs, xs, indexing="ij")
+    vertices = np.stack([vx.ravel(), vy.ravel(), np.full(vx.size, z)], axis=1)
+    faces = []
+    for i in range(n):
+        for j in range(n):
+            a = i*(n + 1) + j
+            faces += [a, a + n + 1, a + 1, a + 1, a + n + 1, a + n + 2]
+    mesh = mi.Mesh("grid-measurement-surface", vertices.shape[0],
+                   len(faces) // 3)
+    params = mi.traverse(mesh)
+    params["vertex_positions"] = vertices.astype(np.float32).ravel()
+    params["faces"] = np.asarray(faces, dtype=np.uint32)
+    params.update()
+    return mesh
+
+
+@pytest.mark.parametrize("num_tx", [1, 2])
+@pytest.mark.parametrize("shared", [True, False])
+def test_precoding_vec_list_pair_compat(num_tx, shared):
+    """A single precoding vector given as a list ``[real, imag]`` must keep
+    returning a single radio map identical to the tuple form"""
+    scene = _setup_precoding_scene(num_tx)
+    num_tx_ant = 4
+
+    weights = np.array([1.0, 1.0, -1.0, 1.0], np.float32) / 2.
+    phases = np.array([0.0, 0.3, 0.6, 0.9], np.float32)
+    real = weights*np.cos(phases)
+    imag = weights*np.sin(phases)
+    if shared:
+        # [num_tx_ant]
+        pv_real, pv_imag = mi.TensorXf(real), mi.TensorXf(imag)
+    else:
+        # [num_tx, num_tx_ant]
+        pv_real = mi.TensorXf(np.tile(real, (num_tx, 1)))
+        pv_imag = mi.TensorXf(np.tile(imag, (num_tx, 1)))
+        assert pv_real.shape == (num_tx, num_tx_ant)
+
+    rm_tuple = _solve_precoding(scene, (pv_real, pv_imag))
+    rm_list = _solve_precoding(scene, [pv_real, pv_imag])
+
+    # The solver must not consume the caller's tensors
+    np.testing.assert_array_equal(pv_real.numpy().reshape(-1)[:num_tx_ant],
+                                  real)
+
+    assert not isinstance(rm_list, list)
+    assert rm_list.path_gain.shape == rm_tuple.path_gain.shape
+    assert rm_list.path_gain.shape[0] == num_tx
+    np.testing.assert_allclose(rm_list.path_gain.numpy(),
+                               rm_tuple.path_gain.numpy(), rtol=1e-5)
+
+
+def test_precoding_vec_batch_forms():
+    """All the forms of a batch of precoding vectors give the same radio maps
+    as solving for every precoding vector separately"""
+    num_tx, num_tx_ant, num_vecs = 2, 4, 3
+    scene = _setup_precoding_scene(num_tx)
+    real, imag = _random_precoding(num_vecs, num_tx, num_tx_ant)
+
+    refs = [_solve_precoding(scene, (mi.TensorXf(real[v]),
+                                     mi.TensorXf(imag[v])))
+            for v in range(num_vecs)]
+    refs = [rm.path_gain.numpy() for rm in refs]
+    # Different precoding vectors lead to different radio maps
+    assert np.max(np.abs(refs[0] - refs[1])) > 0
+
+    batches = {
+        "3d tensors": (mi.TensorXf(real), mi.TensorXf(imag)),
+        "list of tuples": [(mi.TensorXf(real[v]), mi.TensorXf(imag[v]))
+                           for v in range(num_vecs)],
+        "tuple of lists": tuple([mi.TensorXf(real[v]), mi.TensorXf(imag[v])]
+                                for v in range(num_vecs)),
+    }
+    for name, batch in batches.items():
+        rms = _solve_precoding(scene, batch)
+        assert isinstance(rms, list) and len(rms) == num_vecs, name
+        for rm, ref in zip(rms, refs):
+            np.testing.assert_allclose(rm.path_gain.numpy(), ref, rtol=1e-5,
+                                       err_msg=name)
+
+    # A batch of one precoding vector returns a list of one radio map
+    for batch in ([(mi.TensorXf(real[0]), mi.TensorXf(imag[0]))],
+                  (mi.TensorXf(real[:1]), mi.TensorXf(imag[:1]))):
+        rms = _solve_precoding(scene, batch)
+        assert isinstance(rms, list) and len(rms) == 1
+        np.testing.assert_allclose(rms[0].path_gain.numpy(), refs[0],
+                                   rtol=1e-5)
+
+    # A shared (1D) precoding vector in a list is used by all transmitters
+    shared = (mi.TensorXf(real[0, 0]), mi.TensorXf(imag[0, 0]))
+    ref = _solve_precoding(scene, shared).path_gain.numpy()
+    rms = _solve_precoding(scene, [shared, shared])
+    for rm in rms:
+        np.testing.assert_allclose(rm.path_gain.numpy(), ref, rtol=1e-5)
+
+
+@pytest.mark.parametrize("polarization,pattern", [("V", "iso"),
+                                                  ("VH", "tr38901"),
+                                                  ("cross", "dipole")])
+@pytest.mark.parametrize("mesh", [False, True])
+def test_batch_precoding_matches_individual_solves(polarization, pattern,
+                                                   mesh):
+    """Batched precoding with single and dual-polarized arrays, planar and
+    mesh radio maps, and diffraction"""
+    num_tx = 2
+    scene = _setup_precoding_scene(num_tx, polarization, pattern,
+                                   scene_name="simple_wedge")
+    num_tx_ant = scene.tx_array.num_ant
+    real, imag = _random_precoding(3, num_tx, num_tx_ant, seed=1)
+
+    kw = dict(samples_per_tx=int(2e5), max_depth=2, diffraction=True,
+              edge_diffraction=True)
+    if mesh:
+        kw["measurement_surface"] = _grid_mesh()
+    else:
+        kw.update(center=mi.Point3f(0, 0, -10), size=mi.Point2f(40, 40),
+                  cell_size=mi.Point2f(4, 4))
+
+    rms = _solve_precoding(scene, (mi.TensorXf(real), mi.TensorXf(imag)),
+                           **kw)
+    for v, rm in enumerate(rms):
+        ref = _solve_precoding(scene, (mi.TensorXf(real[v]),
+                                       mi.TensorXf(imag[v])), **kw)
+        ref = ref.path_gain.numpy()
+        assert np.count_nonzero(ref) > 0
+        np.testing.assert_allclose(rm.path_gain.numpy(), ref, rtol=1e-4,
+                                   atol=1e-6*np.max(ref))
+
+
+@pytest.mark.parametrize("batch_form", ["3d tensors", "list of tuples"])
+def test_batch_precoding_gradient(batch_form):
+    """Gradients with respect to the precoding vectors are the same whether
+    the precoding vectors are batched or not"""
+    num_tx, num_tx_ant, num_vecs = 1, 4, 2
+    scene = _setup_precoding_scene(num_tx)
+    real, imag = _random_precoding(num_vecs, num_tx, num_tx_ant, seed=2)
+    solver = RadioMapSolver()
+    solver.loop_mode = "evaluated"
+
+    # Reference: one solver call per precoding vector
+    ref_grads = []
+    for v in range(num_vecs):
+        pv_real = mi.TensorXf(real[v])
+        dr.enable_grad(pv_real)
+        rm = _solve_precoding(scene, (pv_real, mi.TensorXf(imag[v])), solver)
+        dr.backward(dr.sum(rm.path_gain, axis=None))
+        ref_grads.append(dr.grad(pv_real).numpy())
+    ref_grads = np.stack(ref_grads)
+    assert np.max(np.abs(ref_grads)) > 0
+
+    if batch_form == "3d tensors":
+        pv_real = mi.TensorXf(real)
+        dr.enable_grad(pv_real)
+        batch = (pv_real, mi.TensorXf(imag))
+    else:
+        pv_real = [mi.TensorXf(real[v]) for v in range(num_vecs)]
+        dr.enable_grad(pv_real)
+        batch = [(pv_real[v], mi.TensorXf(imag[v])) for v in range(num_vecs)]
+    rms = _solve_precoding(scene, batch, solver)
+    dr.backward(sum(dr.sum(rm.path_gain, axis=None) for rm in rms))
+    if batch_form == "3d tensors":
+        grads = dr.grad(pv_real).numpy()
+    else:
+        grads = np.stack([dr.grad(g).numpy() for g in pv_real])
+
+    np.testing.assert_allclose(grads, ref_grads, rtol=1e-4,
+                               atol=1e-6*np.max(np.abs(ref_grads)))
+
+
+def test_precoding_vec_invalid_forms():
+    """Malformed precoding vectors raise explicit errors"""
+    scene = _setup_precoding_scene(1)
+    re = mi.TensorXf([0.5, 0.5, 0.5, 0.5])
+    im = mi.TensorXf([0., 0., 0., 0.])
+
+    with pytest.raises(ValueError):
+        _solve_precoding(scene, [])
+    # Mixing a pair with a bare component is ambiguous
+    with pytest.raises(TypeError):
+        _solve_precoding(scene, [(re, im), re])
+    # A single pair needs exactly two components
+    with pytest.raises(TypeError):
+        _solve_precoding(scene, [re, im, re])
+    # Each pair of a batch needs exactly two components
+    with pytest.raises(ValueError):
+        _solve_precoding(scene, [(re, im, re)])
+    # Batched tensors must have shape [num_precoding_vecs, num_tx, num_tx_ant]
+    with pytest.raises(ValueError, match="num_precoding_vecs"):
+        _solve_precoding(scene, (dr.zeros(mi.TensorXf, [2, 1, 3]),
+                                 dr.zeros(mi.TensorXf, [2, 1, 3])))
+    with pytest.raises(ValueError, match="num_precoding_vecs"):
+        _solve_precoding(scene, (dr.zeros(mi.TensorXf, [2, 1, 4]),
+                                 dr.zeros(mi.TensorXf, [3, 1, 4])))
+    # Batched tensors cannot be nested in a list of pairs
+    with pytest.raises(ValueError, match="shape"):
+        _solve_precoding(scene, [(dr.zeros(mi.TensorXf, [2, 1, 4]),
+                                  dr.zeros(mi.TensorXf, [2, 1, 4]))])
