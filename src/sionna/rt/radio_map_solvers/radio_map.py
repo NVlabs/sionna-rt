@@ -112,11 +112,10 @@ class RadioMap(ABC):
         """
         raise NotImplementedError("RadioMap is an abstract class")
 
-    @abstractmethod
     def add_paths(
         self,
         e_fields: List[mi.Vector4f],
-        array_w: List[mi.Float],
+        array_w: List[mi.Matrix4f],
         si: mi.SurfaceInteraction3f,
         k_world: mi.Vector3f,
         tx_indices: mi.UInt,
@@ -137,7 +136,8 @@ class RadioMap(ABC):
 
         :param e_fields: Electric fields as real-valued vectors of dimension 4
         :param array_w: Weighting used to model the effect of the transmitter
-            array
+            array, as one complex scalar per antenna pattern represented by a
+            real-valued 4x4 matrix
         :param si: Information about the interaction with the measurement
             surface
         :param k_world: Directions of propagation of the incident paths
@@ -158,7 +158,86 @@ class RadioMap(ABC):
             Keller cone.
             Not required for non-diffracted paths.
         """
+        tensor_ind, w, active = self._path_weight(
+            si, k_world, tx_indices, active, diffracted_paths, solid_angle,
+            tx_positions, wedges, diff_point, wedges_samples_cnt,
+            diffraction_angular_measure)
+
+        # Contribution to the path loss map
+        a = dr.zeros(mi.Vector4f, 1)
+        for e_field, aw in zip(e_fields, array_w):
+            a += aw @ e_field
+        a = dr.squared_norm(a)
+
+        self._scatter_path_gain(a * w, tensor_ind, active)
+
+    @abstractmethod
+    def _path_weight(
+        self,
+        si: mi.SurfaceInteraction3f,
+        k_world: mi.Vector3f,
+        tx_indices: mi.UInt,
+        active: mi.Bool,
+        diffracted_paths: bool,
+        solid_angle: mi.Float | None = None,
+        tx_positions: mi.Point3f | None = None,
+        wedges: WedgeGeometry | None = None,
+        diff_point: mi.Point3f | None = None,
+        wedges_samples_cnt: mi.UInt | None = None,
+        diffraction_angular_measure: mi.Float | None = None
+    ) -> Tuple[mi.UInt, mi.Float, mi.Bool]:
+        # pylint: disable=line-too-long
+        r"""
+        Computes where and with which weight the paths that hit the
+        measurement surface contribute to the path gain map
+
+        The contribution of a path is the squared norm of its (precoded)
+        electric field multiplied by the returned weight. The weight only
+        depends on the geometry of the path and of the measurement surface,
+        and can therefore be shared by several radio maps that only differ by
+        the precoding applied at the transmitter.
+
+        :param si: Information about the interaction with the measurement
+            surface
+        :param k_world: Directions of propagation of the incident paths
+        :param tx_indices: Indices of the transmitters from which the rays originate
+        :param active: Flags indicating if the paths should be added to the radio map
+        :param diffracted_paths: Flags indicating if the paths are diffracted
+        :param solid_angle: Ray tubes solid angles [sr] for non-diffracted paths.
+            Not required for diffracted paths.
+        :param tx_positions: Positions of the transmitters
+        :param wedges: Properties of the intersected wedges.
+            Not required for non-diffracted paths.
+        :param diff_point: Position of the diffraction point on the wedge.
+            Not required for non-diffracted paths.
+        :param wedges_samples_cnt: Number of samples on the wedge for the
+            sample's transmitter.
+            Not required for non-diffracted paths.
+        :param diffraction_angular_measure: Angular measure sampled on the
+            Keller cone.
+            Not required for non-diffracted paths.
+
+        :return: Indices of the updated entries of the path gain map, weights,
+            and flags indicating which paths contribute
+        """
         raise NotImplementedError("RadioMap is an abstract class")
+
+    def _scatter_path_gain(
+        self,
+        value: mi.Float,
+        tensor_ind: mi.UInt,
+        active: mi.Bool):
+        r"""
+        Atomically adds ``value`` to the entries ``tensor_ind`` of the path
+        gain map
+
+        :param value: Values to add
+        :param tensor_ind: Indices of the updated entries of the flattened
+            path gain map
+        :param active: Flags indicating which values are added
+        """
+        dr.scatter_reduce(dr.ReduceOp.Add, self._pathgain_map.array,
+                          value=value, index=tensor_ind, active=active)
 
     @property
     def rss(self):
