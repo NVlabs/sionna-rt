@@ -16,6 +16,7 @@ from sionna.rt import load_scene, Transmitter, PlanarArray, ITURadioMaterial,\
     Receiver, PathSolver, RadioMapSolver, BackscatteringPattern, PlanarRadioMap,\
     MeshRadioMap
 from sionna.rt.utils import dbm_to_watt, load_mesh, transform_mesh, WedgeGeometry
+from sionna.rt.antenna_pattern import register_polarization
 
 
 ####################################################
@@ -1593,6 +1594,48 @@ def test_batch_precoding_gradient(batch_form):
 
     np.testing.assert_allclose(grads, ref_grads, rtol=1e-4,
                                atol=1e-6*np.max(np.abs(ref_grads)))
+
+
+@pytest.mark.parametrize("batched", [False, True])
+def test_precoding_nearly_cancelling_patterns(batched):
+    """The power of a precoded field must remain accurate when the fields of
+    the antenna patterns nearly cancel each other
+
+    With the polarization model "tr38901_2", the field of a pattern with slant
+    angle `delta` is cos(delta)*E_V + sin(delta)*E_H. Precoding a pair of
+    patterns with slant angles 0 and `delta` by [1, -1]/sqrt(2) hence yields
+    approximately -sin(delta)/sqrt(2)*E_H, whose path gain is computed
+    independently from a horizontally polarized array.
+    """
+    delta = 1e-4
+    register_polarization("test-nearly-vertical-pair", [0.0, delta])
+
+    def solve(polarization, precoding_vec):
+        scene = load_scene(rt.scene.simple_reflector, merge_shapes=False)
+        scene.tx_array = PlanarArray(num_rows=1, num_cols=1, pattern="iso",
+                                     polarization=polarization)
+        scene.add(Transmitter(name="tx", position=mi.Point3f(1., 1., 0.1)))
+        return _solve_precoding(scene, precoding_vec,
+                                cell_size=mi.Point2f(0.2, 0.2),
+                                size=mi.Point2f(4, 4),
+                                samples_per_tx=int(1e6))
+
+    # Reference: horizontally polarized array
+    pg_h = solve("H", None).path_gain.numpy()
+    expected = 0.5 * np.sin(delta)**2 * pg_h
+    assert np.count_nonzero(expected) > 100
+
+    pv = (mi.TensorXf(np.array([1., -1.], np.float32) / np.sqrt(2.)),
+          mi.TensorXf(np.zeros(2, np.float32)))
+    if batched:
+        rm = solve("test-nearly-vertical-pair", [pv, pv])[1]
+    else:
+        rm = solve("test-nearly-vertical-pair", pv)
+    pg = rm.path_gain.numpy()
+
+    assert np.all(pg >= 0.)
+    np.testing.assert_allclose(pg, expected, rtol=1e-2,
+                               atol=1e-3*np.max(expected))
 
 
 def test_precoding_vec_invalid_forms():

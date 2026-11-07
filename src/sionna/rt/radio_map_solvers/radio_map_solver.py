@@ -4,7 +4,6 @@
 #
 """Radio map solver"""
 
-import math
 from numbers import Integral, Real
 
 import mitsuba as mi
@@ -596,11 +595,11 @@ class RadioMapSolver:
         ray = spawn_ray_from_sources(fibonacci_lattice, samples_per_tx,
                                      tx_positions)
 
-        # Gains to account for the antenna array and precoding, one set per
+        # Weights to account for the antenna array and precoding, one set per
         # precoding vector
-        array_gains = self._synthetic_array_gains(scene, ray.d,
-                                                  rel_ant_positions_tx,
-                                                  precoding_vecs)
+        array_weights = self._synthetic_array_weights(scene, ray.d,
+                                                      rel_ant_positions_tx,
+                                                      precoding_vecs)
 
         # Mask indicating which rays are active
         active = dr.full(dr.mask_t(mi.Float), True, num_samples)
@@ -660,7 +659,8 @@ class RadioMapSolver:
 
         depth = mi.UInt(0)
         while dr.hint(active, mode=self.loop_mode, exclude=[
-                          array_gains, tx_positions, edge_diffraction_enabled,
+                          array_weights, tx_positions,
+                          edge_diffraction_enabled,
                           enabled_interactions, los_enabled, max_depth,
                           num_hashes, num_tx_ant_patterns, radio_maps,
                           ref_radio_map, rr_depth, rr_prob, scene, self,
@@ -726,7 +726,7 @@ class RadioMapSolver:
             # Note that we need to redo the LoS test to handle the case where
             # the measurement surface is part of the scene
             update_radio_map = mp_int & ((depth > 0) | los_enabled)
-            self._add_paths(radio_maps, e_fields, array_gains, si_mp, ray.d,
+            self._add_paths(radio_maps, e_fields, array_weights, si_mp, ray.d,
                             tx_indices, update_radio_map,
                             diffracted_paths=False, solid_angle=solid_angle)
 
@@ -889,11 +889,11 @@ class RadioMapSolver:
         # Initialize the electric field and array weighting
         #############################################################
 
-        # Gains to account for the antenna array and precoding, one set per
+        # Weights to account for the antenna array and precoding, one set per
         # precoding vector
-        array_gains = self._synthetic_array_gains(scene, ki,
-                                                  rel_ant_positions_tx,
-                                                  precoding_vecs)
+        array_weights = self._synthetic_array_weights(scene, ki,
+                                                      rel_ant_positions_tx,
+                                                      precoding_vecs)
 
         # Initialize the electric field
         # Orientation of sources and targets and correspond to-world transforms
@@ -953,7 +953,7 @@ class RadioMapSolver:
         # For mesh-based radio maps, handle potential multiple
         # intersections with the measurement surface
         while dr.hint(valid_path, mode=self.loop_mode,
-                      exclude=[array_gains, tx_positions, radio_maps,
+                      exclude=[array_weights, tx_positions, radio_maps,
                                ref_radio_map]):
 
             # Test intersection with the measurement
@@ -1013,7 +1013,7 @@ class RadioMapSolver:
             )
 
             # Add contribution to the radio maps
-            self._add_paths(radio_maps, diffracted_e_fields, array_gains,
+            self._add_paths(radio_maps, diffracted_e_fields, array_weights,
                             si_mp, ko, tx_indices, add_to_rm,
                             diffracted_paths=True,
                             tx_positions=tx_positions,
@@ -1188,7 +1188,7 @@ class RadioMapSolver:
         self,
         radio_maps: List[RadioMap],
         e_fields: List[mi.Vector4f],
-        array_gains: List[List[mi.Float]],
+        array_weights: List[List[mi.Float]],
         si: mi.SurfaceInteraction3f,
         k_world: mi.Vector3f,
         tx_indices: mi.UInt,
@@ -1206,14 +1206,14 @@ class RadioMapSolver:
         to the radio maps of all precoding vectors
 
         The quantities that do not depend on the precoding (hit cells, ray
-        weights, and products of the electric fields) are computed only once
-        and shared by all radio maps.
+        weights, and, for single-polarized arrays, the power of the electric
+        field) are computed only once and shared by all radio maps.
 
         :param radio_maps: Radio maps, one per precoding vector
         :param e_fields: Electric fields as real-valued vectors of dimension 4,
             one per transmit antenna pattern
-        :param array_gains: Gains modeling the transmit array and precoding,
-            as returned by :meth:`_synthetic_array_gains`
+        :param array_weights: Weights modeling the transmit array and
+            precoding, as returned by :meth:`_synthetic_array_weights`
         :param si: Information about the interaction with the measurement
             surface
 
@@ -1225,62 +1225,55 @@ class RadioMapSolver:
             tx_positions, wedges, diff_point, wedges_samples_cnt,
             diffraction_angular_measure)
 
-        field_terms = self._field_terms(e_fields)
-        for radio_map, gains in zip(radio_maps, array_gains):
-            a = self._precoded_power(gains, field_terms)
-            radio_map._scatter_path_gain(a * w, tensor_ind, active)
+        if len(e_fields) == 1:
+            # Single antenna pattern: the weights reduce to a power gain that
+            # scales the power of the field, which is shared by all precoding
+            # vectors
+            e_power = dr.squared_norm(e_fields[0]) * w
+            for radio_map, (gain,) in zip(radio_maps, array_weights):
+                radio_map._scatter_path_gain(gain * e_power, tensor_ind,
+                                             active)
+        else:
+            for radio_map, weights in zip(radio_maps, array_weights):
+                a = self._precoded_power(weights, e_fields)
+                radio_map._scatter_path_gain(a * w, tensor_ind, active)
 
     @staticmethod
-    def _field_terms(e_fields: List[mi.Vector4f]) -> List[mi.Float]:
+    def _precoded_power(
+        weights: List[mi.Float],
+        e_fields: List[mi.Vector4f]
+    ) -> mi.Float:
         r"""
-        Computes the inner products of the electric fields of the transmit
-        antenna patterns
+        Computes the squared norm of the precoded field
+        :math:`\lVert\sum_p w_p \mathbf{E}_p\rVert^2`
+
+        The fields are combined before computing the norm. Expanding the norm
+        into self and cross terms of the patterns would be cheaper, but it
+        suffers from catastrophic cancellation in single precision when the
+        fields of the patterns nearly cancel each other.
 
         A vector :math:`(x_0, x_1, x_2, x_3)` represents the complex-valued
         field :math:`\mathbf{E} = (x_0 + jx_2, x_1 + jx_3)`.
 
+        :param weights: Real and imaginary parts of the weights :math:`w_p`
+            of one precoding vector, as returned by
+            :meth:`_synthetic_array_weights`
         :param e_fields: Electric fields, one per transmit antenna pattern
-
-        :return: :math:`\lVert\mathbf{E}_p\rVert^2` for all patterns
-            :math:`p`, followed by the real and imaginary parts of
-            :math:`\mathbf{E}_p^{\textsf{H}}\mathbf{E}_q` for all patterns
-            :math:`p<q`
-        """
-        terms = [dr.squared_norm(e) for e in e_fields]
-        for p, e_p in enumerate(e_fields):
-            for e_q in e_fields[p+1:]:
-                terms.append(dr.dot(e_p, e_q))
-                terms.append(e_p.x * e_q.z - e_p.z * e_q.x
-                             + e_p.y * e_q.w - e_p.w * e_q.y)
-        return terms
-
-    @staticmethod
-    def _precoded_power(
-        gains: List[mi.Float],
-        field_terms: List[mi.Float]
-    ) -> mi.Float:
-        r"""
-        Computes the squared norm of the precoded field
-        :math:`\lVert\sum_p w_p \mathbf{E}_p\rVert^2` from the array gains
-        returned by :meth:`_synthetic_array_gains` and the field terms returned
-        by :meth:`_field_terms`
-
-        :param gains: Array gains of one precoding vector
-        :param field_terms: Inner products of the electric fields
 
         :return: Squared norm of the precoded field
         """
-        num_patterns = math.isqrt(len(gains))
-        a = gains[0] * field_terms[0]
-        for p in range(1, num_patterns):
-            a += gains[p] * field_terms[p]
-        for k in range(num_patterns, len(gains), 2):
-            a += 2. * (gains[k] * field_terms[k]
-                       - gains[k+1] * field_terms[k+1])
-        return a
+        s = dr.zeros(mi.Vector4f)
+        for i, e in enumerate(e_fields):
+            wr = weights[2*i]
+            wi = weights[2*i + 1]
+            s += mi.Vector4f(wr * e.x - wi * e.z,
+                             wr * e.y - wi * e.w,
+                             wr * e.z + wi * e.x,
+                             wr * e.w + wi * e.y)
+        return dr.squared_norm(s)
 
     @dr.syntax
-    def _synthetic_array_gains(
+    def _synthetic_array_weights(
         self,
         scene: Scene,
         k_tx: mi.Vector3f,
@@ -1288,7 +1281,7 @@ class RadioMapSolver:
         precoding_vecs: Tuple[mi.TensorXf, mi.TensorXf],
     ) -> List[List[mi.Float]]:
         r"""
-        Computes the gains to apply to the electric field to synthetically
+        Computes the weights to apply to the electric field to synthetically
         model the transmitter array and the precoding
 
         For every precoding vector :math:`\mathbf{p}` and transmit antenna
@@ -1296,12 +1289,11 @@ class RadioMapSolver:
         departure :math:`\mathbf{k}` is
         :math:`w_p = \sum_n p_{p,n} e^{j\frac{2\pi}{\lambda}\mathbf{k}^{\textsf{T}}\mathbf{r}_n}`,
         where :math:`\mathbf{r}_n` is the position of the :math:`n^{th}`
-        antenna relative to the transmitter. As only the power of the precoded
-        field is required, the returned gains are
-        :math:`\lvert w_p\rvert^2` for all patterns, followed by the real and
-        imaginary parts of :math:`w_p^\star w_q` for all patterns
-        :math:`p<q`. A single gain per path is hence required for
-        single-polarized arrays.
+        antenna relative to the transmitter. The returned weights are the
+        real and imaginary parts of :math:`w_p` for all patterns. As only the
+        power of the precoded field is required, a single power gain
+        :math:`\lvert w_0\rvert^2` is returned instead for single-polarized
+        arrays.
 
         :param scene: Scene for which to compute the radio map
         :param k_tx: Directions of departures of paths
@@ -1311,7 +1303,7 @@ class RadioMapSolver:
             complex-valued precoding vectors, each with shape
             `[num_precoding_vecs, num_tx, num_tx_ant]`
 
-        :return: Gains, one list per precoding vector
+        :return: Weights, one list per precoding vector
         """
 
         num_patterns = len(scene.tx_array.antenna_pattern.patterns)
@@ -1375,21 +1367,17 @@ class RadioMapSolver:
             prec_gather_indices += 1
             n += 1
 
-        # Products of the weights required to compute the power of the
-        # precoded field
-        gains = []
+        weights = []
         for v in range(num_precoding_vecs):
-            wr = w_real[v]
-            wi = w_imag[v]
-            g = [dr.square(wr[i]) + dr.square(wi[i])
-                 for i in range(num_patterns)]
-            for i in range(num_patterns):
-                for j in range(i + 1, num_patterns):
-                    g.append(wr[i] * wr[j] + wi[i] * wi[j])
-                    g.append(wr[i] * wi[j] - wi[i] * wr[j])
-            gains.append(g)
+            if num_patterns == 1:
+                # Only the power gain of the array is required
+                weights.append([dr.square(w_real[v][0])
+                                + dr.square(w_imag[v][0])])
+            else:
+                weights.append([w for i in range(num_patterns)
+                                for w in (w_real[v][i], w_imag[v][i])])
 
-        return gains
+        return weights
 
     def _sample_radio_material(
         self,
