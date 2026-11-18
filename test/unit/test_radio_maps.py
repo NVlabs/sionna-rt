@@ -1376,3 +1376,56 @@ def test_show_association(color_map):
         scene.render_to_file(camera=to_world, filename=fname, radio_map=rm,
                              clip_at=0.5 * bbox.max.z)
         print(f"Saved rendering to: {fname}")
+
+def test_mesh_radio_map_diffraction_matches_planar():
+    """Diffraction on a mesh-based radio map matches a planar radio map
+    covering the same area.
+
+    The measurement surface lies in the shadow of a box, several meters away
+    from the diffracting edges, and most diffracted rays reach it below the
+    bisector planes of the wedges.
+    """
+    scene = load_scene(rt.scene.box, merge_shapes=False)
+    scene.tx_array = default_array()
+    scene.add(Transmitter(name="tx", position=[-35.0, 0.0, 2.5]))
+
+    # Grid in the shadow of the box (which spans [-5, 5]^2 x [0, 5])
+    x_min, x_max, y_max, z = 10.0, 45.0, 15.0, 1.5
+    nx, ny = 28, 24
+    gx = np.linspace(x_min, x_max, nx + 1)
+    gy = np.linspace(-y_max, y_max, ny + 1)
+    vertices = np.array([[x, y, z] for y in gy for x in gx], dtype=np.float32)
+    faces = []
+    for j in range(ny):
+        for i in range(nx):
+            a = j * (nx + 1) + i
+            faces += [a, a + 1, a + nx + 2, a, a + nx + 2, a + nx + 1]
+    measurement_surface = mi.Mesh("shadow-grid", len(vertices), len(faces) // 3)
+    params = mi.traverse(measurement_surface)
+    params["vertex_positions"] = vertices.ravel()
+    params["faces"] = np.array(faces, dtype=np.uint32)
+    params.update()
+
+    common = dict(samples_per_tx=10**7,
+                  max_depth=1,
+                  los=False,
+                  specular_reflection=False,
+                  diffuse_reflection=False,
+                  refraction=False,
+                  diffraction=True,
+                  seed=0)
+    solver = RadioMapSolver()
+    gain_mesh = solver(scene, measurement_surface=measurement_surface,
+                       **common).path_gain.numpy()[0]
+    gain_planar = solver(scene,
+                         center=[(x_min + x_max) / 2, 0.0, z],
+                         orientation=[0.0, 0.0, 0.0],
+                         size=[x_max - x_min, 2 * y_max],
+                         cell_size=[(x_max - x_min) / nx, 2 * y_max / ny],
+                         **common).path_gain.numpy()[0]
+
+    assert np.mean(gain_planar > 0) > 0.5
+    assert np.isclose(np.mean(gain_mesh > 0), np.mean(gain_planar > 0),
+                      atol=0.05)
+    err_db = 10 * np.log10(np.mean(gain_mesh) / np.mean(gain_planar))
+    assert abs(err_db) < 0.5

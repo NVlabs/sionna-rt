@@ -12,8 +12,8 @@ from typing import Tuple, Callable, List
 
 from sionna.rt.utils import spawn_ray_from_sources, fibonacci_lattice,\
     rotation_matrix, spectrum_to_matrix_4f, WedgeGeometry,\
-    sample_wedge_diffraction_point, spawn_ray_towards,\
-    sample_keller_cone_with_measure, spawn_ray_to
+    sample_wedge_diffraction_point,\
+    sample_keller_cone_with_measure, spawn_ray_to, offset_p
 from sionna.rt import Scene
 from sionna.rt.antenna_pattern import antenna_pattern_to_world_implicit
 from sionna.rt.constants import InteractionType, MIN_SEGMENT_LENGTH
@@ -968,8 +968,18 @@ class RadioMapSolver:
         # Add path to radio map
         #############################################################
 
-        ray_mp = spawn_ray_towards(diff_point, diff_point + ko, ne)
-        vis_ray2 = spawn_ray_to(diff_point_offset, diff_point_offset + ko)
+        # The origin of `ray_mp` is offset out of the wedge along `ne`.
+        # Offsetting it towards `ko` instead (as `spawn_ray_towards` does)
+        # would move it into the wedge whenever `ko` points below the bisector
+        # plane of the faces, which is the case for most directions into the
+        # shadow region. The ray would then hit the wedge itself.
+        ray_mp = mi.Ray3f(offset_p(diff_point, ne, ne), ko)
+        ray_mp.time = dr.zeros(mi.Float, dr.width(ray_mp.d))
+        # `vis_ray2` must not be limited in length: `ko` is a unit vector, so
+        # `spawn_ray_to(diff_point_offset, diff_point_offset + ko)` would only
+        # reach the measurement surface within 1 m of the diffraction point.
+        vis_ray2 = mi.Ray3f(diff_point_offset, ko)
+        vis_ray2.time = dr.zeros(mi.Float, dr.width(vis_ray2.d))
         # For mesh-based radio maps, handle potential multiple
         # intersections with the measurement surface
         while dr.hint(valid_path, mode=self.loop_mode,
